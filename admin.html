@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>ELDOSTORE | Administración</title>
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<div id="loginScreen">
+  <div class="login-box">
+    <h1>ELDO<span>STORE</span></h1>
+    <p id="loginSubtitle">Panel administrativo. Ingresá con tu cuenta de Supabase.</p>
+    <div class="field">
+      <label for="loginEmail">Email</label>
+      <input type="email" id="loginEmail" autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="loginPass">Contraseña</label>
+      <input type="password" id="loginPass" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary btn-block" id="loginBtn" onclick="handleLogin()">Ingresar</button>
+    <div class="error-msg" id="loginError"></div>
+  </div>
+</div>
+
+<!-- ================= APP ================= -->
+<div id="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <div class="brand">ELDO<span>STORE</span></div>
+      <small>Panel administrativo</small>
+    </div>
+    <nav id="navList">
+      <div class="nav-item" data-view="dashboard"><span class="ico">📊</span> Dashboard</div>
+      <div class="nav-item" data-view="productos"><span class="ico">📦</span> Productos / Inventario</div>
+      <div class="nav-item" data-view="clientes"><span class="ico">👥</span> Clientes</div>
+      <div class="nav-item" data-view="pedidos"><span class="ico">🛒</span> Pedidos</div>
+      <div class="nav-item" data-view="ventas"><span class="ico">💰</span> Ventas</div>
+      <div class="nav-item" data-view="compras"><span class="ico">🛍️</span> Compras</div>
+      <div class="nav-item" data-view="gastos"><span class="ico">💸</span> Gastos</div>
+      <div class="nav-item" data-view="caja"><span class="ico">💵</span> Caja</div>
+      <div class="nav-item" data-view="envios"><span class="ico">🚚</span> Envíos</div>
+      <div class="nav-item" data-view="reportes"><span class="ico">📈</span> Reportes</div>
+      <div class="nav-item" data-view="config"><span class="ico">⚙️</span> Configuración</div>
+    </nav>
+    <div class="sidebar-foot">
+      <a href="index.html" class="btn btn-sm" style="margin-bottom:8px;width:100%">← Ver sitio público</a>
+      <button class="btn btn-sm btn-danger btn-block" onclick="logout()">Cerrar sesión</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <button class="menu-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+      <h2 id="viewTitle">Dashboard</h2>
+      <div></div>
+    </div>
+
+    <div class="content">
+
+      <!-- ---------- DASHBOARD ---------- -->
+      <section class="view active" id="view-dashboard">
+        <div class="grid grid-4" id="kpiGrid"></div>
+        <div class="panel" style="margin-top:20px">
+          <h3>Ventas últimos 7 días</h3>
+          <div class="chart-bars" id="salesChart"></div>
+        </div>
+        <div class="panel">
+          <h3>Productos con stock bajo</h3>
+          <div class="table-wrap"><table id="lowStockTable"><thead><tr><th>Código</th><th>Producto</th><th>Stock</th><th>Mínimo</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- ---------- PRODUCTOS ---------- -->
+      <section class="view" id="view-productos">
+        <div class="toolbar">
+          <input type="text" id="prodSearch" placeholder="Buscar por código o nombre...">
+          <select id="prodCatFilter"><option value="">Todas las categorías</option></select>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted)">
+            <input type="checkbox" id="prodLowStock" style="width:auto"> Stock bajo
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted)">
+            <input type="checkbox" id="prodNoStock" style="width:auto"> Sin stock
+          </label>
+          <div class="spacer"></div>
+          <button class="btn btn-sm" onclick="openImportModal()">Importar CSV</button>
+          <button class="btn btn-primary btn-sm" onclick="openProductModal()">+ Nuevo producto</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Código</th><th>Nombre</th><th>Categoría</th><th>Costo</th><th>Precio</th>
+              <th>Ganancia u.</th><th>Margen</th><th>Stock</th><th>Valor stock</th><th></th>
+            </tr></thead>
+            <tbody id="prodTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- CLIENTES ---------- -->
+      <section class="view" id="view-clientes">
+        <div class="toolbar">
+          <input type="text" id="cliSearch" placeholder="Buscar cliente...">
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openClientModal()">+ Nuevo cliente</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Nombre</th><th>Teléfono</th><th>Localidad</th><th>Total gastado</th><th>Última compra</th><th></th></tr></thead>
+            <tbody id="cliTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- PEDIDOS ---------- -->
+      <section class="view" id="view-pedidos">
+        <div class="toolbar">
+          <select id="pedEstadoFilter">
+            <option value="">Todos los estados</option>
+          </select>
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openOrderModal()">+ Nuevo pedido</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Cliente</th><th>Total</th><th>Seña</th><th>Saldo</th><th>Estado</th><th></th></tr></thead>
+            <tbody id="pedTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- VENTAS ---------- -->
+      <section class="view" id="view-ventas">
+        <div class="grid grid-4" id="ventaResumen" style="margin-bottom:20px"></div>
+        <div class="toolbar">
+          <select id="ventaModalidadFilter">
+            <option value="">Todas las modalidades</option>
+            <option value="propia">Ventas propias</option>
+            <option value="revendedor">Ventas por revendedor</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted)">
+            <input type="checkbox" id="ventaVerAnuladas" style="width:auto;min-width:0;padding:0"> Mostrar anuladas
+          </label>
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openSaleModal()">+ Registrar venta</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Modalidad</th><th>Cliente</th><th>Productos</th><th>Total</th><th>Costo</th><th>Comisión</th><th>Ganancia</th><th>Pago</th><th></th></tr></thead>
+            <tbody id="ventaTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- COMPRAS ---------- -->
+      <section class="view" id="view-compras">
+        <div class="toolbar">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted)">
+            <input type="checkbox" id="compraVerAnuladas" style="width:auto;min-width:0;padding:0"> Mostrar anuladas
+          </label>
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openPurchaseModal()">+ Registrar compra</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Proveedor</th><th>Producto</th><th>Cantidad</th><th>Costo u.</th><th>Total</th><th></th></tr></thead>
+            <tbody id="compraTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- GASTOS ---------- -->
+      <section class="view" id="view-gastos">
+        <div class="toolbar">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted)">
+            <input type="checkbox" id="gastoVerAnuladas" style="width:auto;min-width:0;padding:0"> Mostrar anulados
+          </label>
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openExpenseModal()">+ Nuevo gasto</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Descripción</th><th>Categoría</th><th>Importe</th><th>Pago</th><th></th></tr></thead>
+            <tbody id="gastoTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- CAJA ---------- -->
+      <section class="view" id="view-caja">
+        <div class="grid grid-3" style="margin-bottom:20px">
+          <div class="kpi green"><span>Ingresos totales</span><strong id="cajaIngresos">$0</strong></div>
+          <div class="kpi red"><span>Egresos totales</span><strong id="cajaEgresos">$0</strong></div>
+          <div class="kpi gold"><span>Saldo de caja</span><strong id="cajaSaldo">$0</strong></div>
+        </div>
+        <div class="toolbar">
+          <div class="spacer"></div>
+          <button class="btn btn-sm" onclick="openCashModal('ingreso')">+ Ingreso manual</button>
+          <button class="btn btn-sm" onclick="openCashModal('egreso')">+ Egreso manual</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Tipo</th><th>Origen</th><th>Descripción</th><th>Monto</th></tr></thead>
+            <tbody id="cajaTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- ENVÍOS ---------- -->
+      <section class="view" id="view-envios">
+        <div class="panel">
+          <h3>Calculadora de envío</h3>
+          <div class="two-col">
+            <div class="field"><label>Distancia (km)</label><input type="number" id="calcKm" min="0"></div>
+            <div class="field"><label>Total del pedido</label><input type="number" id="calcTotal" min="0"></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="calcularEnvio()">Calcular</button>
+          <p id="calcResultado" style="margin-top:12px;color:var(--gold);font-weight:700"></p>
+          <p style="font-size:.8rem;color:var(--muted);margin-top:6px">
+            Tarifas: Km 1–5 $1.500 · Km 6–11 $2.000 · Km 12–18 $3.000 · Envío gratis desde $50.000 dentro de Eldorado.
+          </p>
+        </div>
+        <div class="toolbar">
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openShipmentModal()">+ Nuevo envío</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Cliente</th><th>Dirección</th><th>Costo envío</th><th>Estado</th><th></th></tr></thead>
+            <tbody id="envioTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------- REPORTES ---------- -->
+      <section class="view" id="view-reportes">
+        <div class="toolbar">
+          <div class="field" style="margin:0"><label>Desde</label><input type="date" id="repDesde"></div>
+          <div class="field" style="margin:0"><label>Hasta</label><input type="date" id="repHasta"></div>
+          <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="renderReportes()">Aplicar filtro</button>
+        </div>
+        <div class="grid grid-4" id="repKpis" style="margin-bottom:20px"></div>
+        <div class="panel">
+          <h3>Ventas por modalidad</h3>
+          <div class="table-wrap"><table><thead><tr><th>Modalidad</th><th>Ventas</th><th>Total vendido</th><th>Costo</th><th>Comisiones</th><th>Ganancia bruta</th></tr></thead><tbody id="repModalidades"></tbody></table></div>
+          <p style="font-size:.8rem;color:var(--muted);margin-top:8px">Ganancia bruta = total vendido − costo − comisiones de revendedor, antes de gastos. No incluye operaciones anuladas.</p>
+        </div>
+        <div class="panel">
+          <h3>Productos más vendidos</h3>
+          <div class="table-wrap"><table><thead><tr><th>Producto</th><th>Unidades</th><th>Total vendido</th></tr></thead><tbody id="repTopProductos"></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- ---------- CONFIGURACIÓN ---------- -->
+      <section class="view" id="view-config">
+        <div class="panel">
+          <h3>Respaldo de datos</h3>
+          <p style="color:var(--muted);font-size:.88rem;margin-bottom:14px">
+            Los datos se guardan en Supabase. Descargá un respaldo periódicamente y guardalo en un lugar seguro.
+          </p>
+          <button class="btn btn-sm" onclick="downloadBackup()">Descargar respaldo (JSON)</button>
+          <div class="field" style="margin-top:16px">
+            <label>Restaurar respaldo</label>
+            <input type="file" id="restoreFile" accept=".json">
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Cambiar contraseña</h3>
+          <p style="color:var(--muted);font-size:.85rem;margin-bottom:12px">La contraseña se actualiza en tu cuenta de Supabase Auth.</p>
+          <div class="field"><label>Nueva contraseña</label><input type="password" id="passNueva" autocomplete="new-password"></div>
+          <button class="btn btn-sm" onclick="handleChangePassword()">Actualizar contraseña</button>
+          <p class="error-msg" id="passMsg"></p>
+        </div>
+        <div class="panel">
+          <h3>Inventario real</h3>
+          <p style="color:var(--muted);font-size:.85rem;margin-bottom:12px">
+            Sube los 117 productos reales a Supabase la primera vez. Es seguro apretarlo más de una vez: no duplica productos existentes (usa el código como clave única).
+          </p>
+          <button class="btn btn-sm" id="migrateBtn" onclick="handleMigrateInventory()">Migrar inventario real a Supabase</button>
+        </div>
+        <div class="panel">
+          <h3>Base de datos online</h3>
+          <p style="color:var(--muted);font-size:.88rem">
+            Conectado a Supabase. Todos los dispositivos que inicien sesión con la misma cuenta ven los mismos datos en tiempo real.
+          </p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODALES ================= -->
+<div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js"></script>
+<script src="data/inventario-real.js"></script>
+<script src="js/db.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
