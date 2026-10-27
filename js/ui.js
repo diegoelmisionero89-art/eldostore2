@@ -233,6 +233,13 @@ function openProductModal(id) {
       </div>
     </div>
     <div class="field"><label>Nombre</label><input id="f_nombre" value="${p ? p.nombre : ''}"></div>
+    
+        <div class="field">
+          <label>Foto del producto</label>
+          <input type="file" id="f_foto" accept="image/jpeg,image/png,image/webp">
+          <small>Formatos permitidos: JPG, PNG y WebP. Máximo 5 MB.</small>
+        </div>
+
     <div class="two-col">
       <div class="field"><label>Costo</label><input type="number" id="f_costo" value="${p ? p.costo : ''}"></div>
       <div class="field"><label>Precio de venta</label><input type="number" id="f_precio" value="${p ? p.precio : ''}"></div>
@@ -258,10 +265,43 @@ async function saveProduct(id) {
     stock: document.getElementById('f_stock').value,
     stockMin: document.getElementById('f_stockMin').value
   };
+   
+  const archivoFoto = document.getElementById('f_foto').files[0];
+  if (archivoFoto) {
+    if (!archivoFoto.type.startsWith('image/')) {
+      showToast('Seleccioná un archivo de imagen.');
+      return;
+    }
+    if (archivoFoto.size > 5 * 1024 * 1024) {
+      showToast('La imagen no puede superar los 5 MB.');
+      return;
+    }
+  }
+
   if (!data.nombre) { showToast('El nombre es obligatorio.'); return; }
   const btn = document.getElementById('saveProductBtn');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
+     
+    if (archivoFoto) {
+      const extension = archivoFoto.name.split('.').pop().toLowerCase();
+      const nombreArchivo = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+      const { error: errorFoto } = await sb.storage
+        .from('productos-fotos')
+        .upload(nombreArchivo, archivoFoto, {
+          contentType: archivoFoto.type,
+          upsert: false
+        });
+
+      if (errorFoto) throw errorFoto;
+
+      const { data: fotoPublica } = sb.storage
+        .from('productos-fotos')
+        .getPublicUrl(nombreArchivo);
+
+      data.foto = fotoPublica.publicUrl;
+    }
+
     if (id) await updateProduct(id, data); else await addProduct(data);
     closeModal();
     renderProducts();
