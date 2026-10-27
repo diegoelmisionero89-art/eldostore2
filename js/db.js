@@ -253,6 +253,9 @@ async function updateProduct(id, data) {
   if (data.stock !== undefined) payload.stock = Number(data.stock) || 0;
   if (data.stockMin !== undefined) payload.stock_min = Number(data.stockMin) || 0;
   if (data.revisar !== undefined) payload.revisar = !!data.revisar;
+   
+if (data.foto !== undefined) payload.foto = data.foto;
+
 
   const { data: row, error } = await sb.from('products').update(payload).eq('id', id).select().single();
   throwIfError(error, 'editar producto');
