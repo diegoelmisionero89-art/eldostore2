@@ -173,6 +173,9 @@
     return `<span class="ph">${chico ? "" : "ELDOSTORE"}</span>`;
   }
 
+  const PREFIJO_FICHA = "#producto/";
+  const enlaceFicha = p => esc(PREFIJO_FICHA + encodeURIComponent(p.clave));
+
   function filtrados() {
     const t = norm(estado.texto);
     let lista = PRODUCTOS.filter(p =>
@@ -209,9 +212,9 @@
          </div>`
       : `<div class="buyrow"><button class="add" type="button" disabled>${!p.disponible ? "Sin stock" : "Consultá por WhatsApp"}</button></div>`;
     return `<article class="card${p.disponible ? "" : " is-off"}" data-k="${esc(p.clave)}">
-      <div class="pic">${tag}${fotoHTML(p)}</div>
+      <a class="pic" href="${enlaceFicha(p)}" aria-label="Ver ${esc(p.nombre)}">${tag}${fotoHTML(p)}</a>
       ${p.categoria ? `<p class="cat-lbl">${esc(p.categoria)}</p>` : ""}
-      <h3 class="name" title="${esc(p.nombre)}">${esc(p.nombre)}</h3>
+      <h3 class="name" title="${esc(p.nombre)}"><a href="${enlaceFicha(p)}">${esc(p.nombre)}</a></h3>
       ${precio}
       ${stock}
       ${compra}
@@ -323,7 +326,9 @@
     actualizarMensaje();
   }
 
-  function actualizarTodo() { dibujarEncabezado(); dibujarCatalogo(); dibujarCarrito(); }
+  function actualizarTodo() { dibujarEncabezado(); dibujarCatalogo(); dibujarCarrito(); if (typeof refrescarFicha === "function") refrescarFicha(); }
+  let refrescarFicha = null;
+  let catalogoListo = false;
 
   /* ---------- Avisos ---------- */
   function aviso(html) { const n = $("#notice"); n.innerHTML = html; n.hidden = false; }
@@ -365,7 +370,7 @@
     abierto.classList.remove("on"); abierto.setAttribute("inert", ""); abierto.setAttribute("aria-hidden", "true");
     $("#btnMenu").setAttribute("aria-expanded", "false"); $("#btnCart").setAttribute("aria-expanded", "false");
     $("#scrim").classList.remove("on");
-    document.documentElement.classList.remove("lock");
+    if (!document.body.classList.contains("ficha-open")) document.documentElement.classList.remove("lock");
     document.body.classList.remove("panel-open");
     abierto = null;
     if (devolverFoco !== false && focoPrevio) focoPrevio.focus();
@@ -437,8 +442,176 @@
   });
   // Foto que no carga: se reemplaza por un fondo neutro
   grid.addEventListener("error", e => {
-    if (e.target.tagName === "IMG") { const s = document.createElement("span"); s.className = "ph"; s.textContent = "ELDOSTORE"; e.target.replaceWith(s); }
+    if (e.target.tagName !== "IMG") return;
+    const s = document.createElement("span"); s.className = "ph"; s.textContent = "ELDOSTORE"; e.target.replaceWith(s);
   }, true);
+
+  /* ---------- Ficha individual del producto ----------
+     Se abre al tocar la foto o el nombre. Usa la dirección #producto/…,
+     así el botón Atrás del celular o del navegador vuelve al catálogo,
+     con los filtros, la búsqueda, el carrito y la posición intactos.
+     Todo sale de los datos reales de catalogo_tienda(); no consulta ni
+     modifica la base de datos. */
+  const ficha = document.createElement("section");
+  ficha.className = "ficha"; ficha.id = "ficha"; ficha.hidden = true;
+  ficha.setAttribute("aria-label", "Ficha del producto");
+  document.body.appendChild(ficha);
+  let fichaClave = null, fichaQty = 1, fichaDesdeTienda = false, focoFicha = null;
+  const tituloOriginal = document.title;
+
+  function relacionados(p) {
+    const otros = PRODUCTOS.filter(x => x.clave !== p.clave && x.disponible);
+    // Primero la misma categoría; después precios parecidos. En cada grupo, primero los que tienen foto.
+    const dist = x => Math.abs((x.precio || 0) - (p.precio || 0));
+    const orden = (a, b) => (!!b.foto - !!a.foto) || dist(a) - dist(b);
+    const misma = p.categoria ? otros.filter(x => x.categoria === p.categoria).sort(orden) : [];
+    const cerca = otros.filter(x => !misma.includes(x)).sort(orden);
+    return misma.concat(cerca).slice(0, 8);
+  }
+
+  function dibujarFicha() {
+    const p = porClave.get(fichaClave);
+    const { unidades, total } = totales();
+    const barra = `<div class="f-bar">
+        <button type="button" class="f-back" data-f="volver" aria-label="Volver al catálogo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>Volver</span></button>
+        <span class="f-brand">ELD<span>⚡</span>STORE</span>
+        <button type="button" class="f-cart" data-f="carrito" aria-label="Abrir carrito: ${unidades} artículos, ${money(total)}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h2l2.2 10.2a1.5 1.5 0 0 0 1.5 1.2h8.6a1.5 1.5 0 0 0 1.5-1.1L20.5 8H6.1"/><circle cx="9.5" cy="19.5" r="1.3"/><circle cx="17" cy="19.5" r="1.3"/></svg>
+          <span class="cart-count">${unidades}</span><span>${money(total)}</span></button>
+      </div>`;
+    if (!p) {
+      ficha.innerHTML = barra + `<div class="f-wrap"><div class="state"><b>Este producto ya no está publicado.</b>Puede que se haya agotado o que haya cambiado.<br><button class="cta" type="button" data-f="volver">Ver el catálogo</button></div></div>`;
+      document.title = tituloOriginal;
+      return;
+    }
+    const ok = sePuedeComprar(p);
+    const enCarrito = carrito.get(p.clave) || 0;
+    const oferta = p.precio && p.precioAnterior && p.precioAnterior > p.precio;
+    const precio = p.precio
+      ? `<p class="f-price">${oferta ? `<span class="old">${money(p.precioAnterior)}</span>` : ""}${money(p.precio)}</p>`
+      : `<p class="f-price na">Consultar precio</p>`;
+    const stock = !p.disponible ? '<span class="stock no">Sin stock</span>'
+      : (!p.precio ? '<span class="stock na">Precio a confirmar</span>' : '<span class="stock ok">Disponible</span>');
+    const n = numeroWhatsApp();
+    const consulta = n
+      ? `<a class="f-wa" href="https://wa.me/${n}?text=${encodeURIComponent("Hola ELDOSTORE, quiero consultar por: " + p.nombre + (p.precio ? " (" + money(p.precio) + ")" : ""))}" target="_blank" rel="noopener noreferrer">${WA_SVG}Consultar por WhatsApp</a>` : "";
+    const compra = ok
+      ? `<div class="f-buy">
+           <div class="qty" role="group" aria-label="Cantidad">
+             <button type="button" data-f="dec" aria-label="Restar uno" ${fichaQty <= 1 ? "disabled" : ""}>−</button>
+             <output aria-live="polite">${fichaQty}</output>
+             <button type="button" data-f="inc" aria-label="Sumar uno" ${fichaQty >= CANTIDAD_MAX ? "disabled" : ""}>+</button>
+           </div>
+           <button type="button" class="add f-add" data-f="add">Agregar al carrito</button>
+         </div>`
+      : `<div class="f-buy"><button type="button" class="add f-add" disabled>${!p.disponible ? "Sin stock" : "Precio a confirmar"}</button></div>`;
+    const rel = relacionados(p);
+    const relHTML = rel.length ? `<section class="f-rel" aria-labelledby="fRelT">
+        <h2 id="fRelT">Esta opción también te podría servir</h2>
+        <div class="f-rel-list">${rel.map(r => `<a class="f-mini" href="${enlaceFicha(r)}">
+            <span class="f-mini-pic">${fotoHTML(r)}</span>
+            <span class="f-mini-name">${esc(r.nombre)}</span>
+            <span class="f-mini-price${r.precio ? "" : " na"}">${r.precio ? money(r.precio) : "Consultar precio"}</span></a>`).join("")}</div>
+      </section>` : "";
+    ficha.innerHTML = barra + `<div class="f-wrap">
+        <div class="f-main">
+          <div class="f-photo${p.disponible ? "" : " is-off"}">${!p.disponible ? '<span class="tag grey">Sin stock</span>' : (oferta ? `<span class="tag red">${Math.round((1 - p.precio / p.precioAnterior) * 100)}% OFF</span>` : "")}${p.foto ? `<img src="${esc(p.foto)}" alt="${esc(p.nombre)}" decoding="async">` : '<span class="ph">ELDOSTORE</span>'}</div>
+          <div class="f-info">
+            ${p.categoria ? `<p class="cat-lbl">${esc(p.categoria)}</p>` : ""}
+            <h1 class="f-name" id="fName" tabindex="-1">${esc(p.nombre)}</h1>
+            ${precio}
+            ${stock}
+            ${compra}
+            <p class="incart" ${enCarrito ? "" : "hidden"}>En tu carrito: ${enCarrito}</p>
+            <ul class="f-notes">
+              <li>Envío gratis desde ${money(Number(CFG.envioGratisDesde) || 12000)} dentro de Eldorado.</li>
+              <li>Coordinamos disponibilidad, pago y entrega por WhatsApp.</li>
+            </ul>
+            ${consulta}
+          </div>
+        </div>
+        ${relHTML}
+      </div>`;
+    document.title = p.nombre + " | ELDOSTORE";
+  }
+
+  function mostrarFicha(clave) {
+    const cambio = clave !== fichaClave;
+    if (cambio) fichaQty = 1;
+    if (ficha.hidden) {
+      const a = document.activeElement;
+      focoFicha = a && a !== document.body ? a : null;
+    }
+    fichaClave = clave;
+    dibujarFicha();
+    ficha.hidden = false;
+    document.body.classList.add("ficha-open");
+    document.documentElement.classList.add("lock");
+    if (cambio) ficha.scrollTop = 0;
+    const h = ficha.querySelector("#fName") || ficha.querySelector(".f-back");
+    if (h) h.focus({ preventScroll: true });
+  }
+  function ocultarFicha() {
+    if (ficha.hidden) return;
+    ficha.hidden = true; ficha.innerHTML = ""; fichaClave = null;
+    document.body.classList.remove("ficha-open");
+    if (!abierto) document.documentElement.classList.remove("lock");
+    document.title = tituloOriginal;
+    if (focoFicha && document.body.contains(focoFicha)) focoFicha.focus({ preventScroll: true });
+    focoFicha = null;
+    pedirUbicarWa();
+  }
+  function claveDesdeDireccion() {
+    const h = location.hash;
+    if (!h.startsWith(PREFIJO_FICHA)) return null;
+    try { return decodeURIComponent(h.slice(PREFIJO_FICHA.length)); } catch (e) { return ""; }
+  }
+  function enrutar() {
+    if (!catalogoListo) return;
+    const k = claveDesdeDireccion();
+    if (k === null) ocultarFicha();
+    else mostrarFicha(k);
+  }
+  function volverAlCatalogo() {
+    if (fichaDesdeTienda && history.length > 1) history.back();
+    else { history.replaceState(null, "", location.pathname + location.search); ocultarFicha(); }
+  }
+  refrescarFicha = () => { if (!ficha.hidden) dibujarFicha(); };
+  window.addEventListener("hashchange", () => { if (claveDesdeDireccion() !== null) fichaDesdeTienda = true; enrutar(); });
+  document.addEventListener("click", e => {
+    const a = e.target.closest('a[href^="#producto/"]');
+    if (a) fichaDesdeTienda = true;
+  }, true);
+
+  ficha.addEventListener("click", e => {
+    const b = e.target.closest("[data-f]"); if (!b) return;
+    const p = porClave.get(fichaClave);
+    switch (b.dataset.f) {
+      case "volver": volverAlCatalogo(); return;
+      case "carrito": $("#sendStatus").hidden = true; abrir($("#cart"), b); return;
+      case "inc": fichaQty = Math.min(CANTIDAD_MAX, fichaQty + 1); break;
+      case "dec": fichaQty = Math.max(1, fichaQty - 1); break;
+      case "add": {
+        if (!sePuedeComprar(p)) return;
+        const antes = carrito.get(p.clave) || 0;
+        const nuevo = Math.min(CANTIDAD_MAX, antes + fichaQty);
+        if (nuevo === antes) { toast("Llegaste al máximo de " + CANTIDAD_MAX + " unidades de este producto."); return; }
+        fichaQty = 1;
+        setCantidad(p.clave, nuevo);
+        toast("<b>Agregado:</b> " + (nuevo - antes) + " × " + esc(p.nombre));
+        break;
+      }
+    }
+    dibujarFicha();
+    const again = ficha.querySelector(`[data-f="${b.dataset.f}"]`);
+    if (again && !again.disabled) again.focus({ preventScroll: true });
+  });
+  ficha.addEventListener("error", e => {
+    if (e.target.tagName !== "IMG") return;
+    const s = document.createElement("span"); s.className = "ph"; s.textContent = e.target.closest(".f-mini") ? "" : "ELDOSTORE"; e.target.replaceWith(s);
+  }, true);
+
   $("#items").addEventListener("error", e => {
     if (e.target.tagName === "IMG") e.target.remove();
   }, true);
@@ -478,7 +651,11 @@
   $("#btnCart").addEventListener("click", e => { $("#sendStatus").hidden = true; abrir($("#cart"), e.currentTarget); });
   $("#scrim").addEventListener("click", () => cerrar());
   document.addEventListener("click", e => { const c = e.target.closest("[data-close]"); if (c) cerrar(!c.closest("a")); });
-  document.addEventListener("keydown", e => { if (e.key === "Escape" && abierto) cerrar(); });
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    if (abierto) { cerrar(); return; }
+    if (!ficha.hidden) volverAlCatalogo();
+  });
   document.addEventListener("click", e => { if (!e.target.closest("#waFab, #waAviso")) $("#waAviso").hidden = true; });
 
   $("#orderForm").addEventListener("submit", e => e.preventDefault());
@@ -535,6 +712,8 @@
       conciliarCarrito();
       dibujarCategorias();
       actualizarTodo();
+      catalogoListo = true;
+      enrutar();
     } catch (err) {
       console.error("Error al cargar el catálogo:", err);
       mostrarError(err);
