@@ -1,0 +1,98 @@
+# ELDOSTORE — Respaldo integral de la base Supabase (manual)
+#
+# Hace el volcado completo que recomienda Supabase para el plan Free
+# (supabase db dump: roles, estructura y datos, incluido auth), lo CIFRA con una
+# clave tuya y lo guarda como archivo descargable del workflow durante 90 días.
+# No cambia nada en la base: solo lee.
+#
+# Se usa desde GitHub (también desde el iPhone): Actions → "Respaldo Supabase" →
+# Run workflow. Necesita dos secretos del repositorio (Settings → Secrets and
+# variables → Actions):
+#   SUPABASE_DB_URL  Connection string "Session pooler" (Supabase → Connect), con la
+#                    contraseña de la base reemplazando [YOUR-PASSWORD].
+#   RESPALDO_CLAVE   Una clave larga que inventes (12+ caracteres). Sin ella el
+#                    respaldo no se puede abrir: guardala en un lugar seguro.
+#
+# El repositorio es público: por eso el archivo sale cifrado y el registro solo
+# muestra cantidades, nunca datos.
+# Para restaurar (solo en caso de desastre, desde una computadora):
+#   gpg -d eldostore-respaldo-*.tar.gz.gpg | tar xz
+#   y seguir "Restore" en https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore
+
+name: Respaldo Supabase
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  respaldo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Verificar secretos
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          CLAVE: ${{ secrets.RESPALDO_CLAVE }}
+        run: |
+          if [ -z "$DB_URL" ]; then echo "::error::Falta el secreto SUPABASE_DB_URL"; exit 1; fi
+          if [ ${#CLAVE} -lt 12 ]; then echo "::error::Falta el secreto RESPALDO_CLAVE (mínimo 12 caracteres)"; exit 1; fi
+          case "$DB_URL" in *YOUR-PASSWORD*) echo "::error::La connection string todavía dice [YOUR-PASSWORD]"; exit 1;; esac
+
+      - name: Instalar Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Volcar la base (solo lectura)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p respaldo
+          supabase db dump --db-url "$DB_URL" -f respaldo/roles.sql --role-only
+          supabase db dump --db-url "$DB_URL" -f respaldo/schema.sql
+          supabase db dump --db-url "$DB_URL" -f respaldo/data.sql --use-copy --data-only \
+            -x "storage.buckets_vectors" -x "storage.vector_indexes"
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > respaldo/fecha.txt
+
+      - name: Resumen (cantidades, sin datos)
+        run: |
+          {
+            echo "## Respaldo ELDOSTORE"
+            echo ""
+            echo "Fecha (UTC): $(cat respaldo/fecha.txt)"
+            echo ""
+            echo "| Archivo | Tamaño |"
+            echo "|---|---|"
+            for f in roles.sql schema.sql data.sql; do echo "| $f | $(du -h respaldo/$f | cut -f1) |"; done
+            echo ""
+            echo "| Tabla | Filas respaldadas |"
+            echo "|---|---|"
+            awk '/^COPY /{t=$2; n=0; inside=1; next} inside && /^\\\.$/{print "| " t " | " n " |"; inside=0; next} inside{n++}' respaldo/data.sql \
+              | grep -E '"?(public|auth)"?\.' || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -q '^COPY "public"."products"\|^COPY public.products' respaldo/data.sql || { echo "::error::El volcado no contiene la tabla products"; exit 1; }
+
+      - name: Cifrar
+        env:
+          CLAVE: ${{ secrets.RESPALDO_CLAVE }}
+        run: |
+          set -euo pipefail
+          nombre="eldostore-respaldo-$(date -u +%Y%m%d-%H%M).tar.gz.gpg"
+          tar czf - respaldo | gpg --batch --yes --pinentry-mode loopback --symmetric --cipher-algo AES256 \
+            --passphrase "$CLAVE" -o "$nombre"
+          rm -rf respaldo
+          echo "ARCHIVO=$nombre" >> "$GITHUB_ENV"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Archivo cifrado: \`$nombre\` ($(du -h "$nombre" | cut -f1)). Descargalo abajo, en **Artifacts**." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar el archivo cifrado
+        uses: actions/upload-artifact@v4
+        with:
+          name: eldostore-respaldo
+          path: ${{ env.ARCHIVO }}
+          retention-days: 90
+          if-no-files-found: error

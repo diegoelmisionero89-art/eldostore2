@@ -1,8 +1,13 @@
 -- =============================================================================
 -- ELDOSTORE — Migración 003: tres cuentas (ELDOSTORE, Niko, Ayelen)
--- Versión de PRUEBA · 29/10/2026 · Rama cuentas-v003
+-- Versión FINAL para producción · 29/10/2026 · V003
 --
--- CORRER PRIMERO EN UN PROYECTO SUPABASE DE PRUEBAS. NUNCA directamente en producción.
+-- REQUISITOS ANTES DE CORRERLA EN LA BASE REAL (instructivo de instalación):
+--   1. Respaldo integral de la base guardado fuera de Supabase (respaldo diario del
+--      plan Pro de hoy, o el volcado completo de GitHub Actions "Respaldo Supabase").
+--   2. Chequeo previo (migracion-003-chequeo-previo.sql) sin filas "REVISAR".
+--   3. Copia rápida dentro de la base (respaldo-003-previo.sql), que además guarda
+--      los totales de control para compararlos después.
 --
 -- Qué hace:
 --   * Agrega cuentas, custodios (quién tiene el dinero) y usuarios del panel.
@@ -35,8 +40,8 @@
 --     directamente desde el navegador; el panel nuevo usa las v3, que las llaman por
 --     dentro. Los permisos originales se guardan para la reversión.
 --
--- Cómo correrla (proyecto de pruebas): SQL Editor → pegar TODO el archivo → Run.
--- Antes y después: Q2 de CONSULTAS-SOLO-LECTURA-ELDOSTORE.sql (tiene que dar igual).
+-- Cómo correrla: SQL Editor → pegar TODO el archivo → Run.
+-- Después: control posterior (compara los totales con los guardados) e invariantes.
 -- Reversión: data/migracion-003-revertir.sql
 -- =============================================================================
 
@@ -161,7 +166,8 @@ begin
 end
 $verificar$;
 
--- Prueba de compatibilidad SIN dejar datos: cada inserción se deshace en el acto.
+-- Control de compatibilidad SIN dejar datos: cada inserción de control se deshace en
+-- el acto (verifica que las tablas reales acepten las filas nuevas antes de seguir).
 -- Detecta restricciones desconocidas (CHECK, NOT NULL) antes de cambiar nada.
 do $compatibilidad$
 declare v text; marca constant text := '__eldo003_prueba_sin_datos__';

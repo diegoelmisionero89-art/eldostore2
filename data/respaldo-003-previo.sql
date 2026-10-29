@@ -1,5 +1,11 @@
 -- =============================================================================
--- ELDOSTORE — Respaldo previo a la migración 003 (dentro de la misma base)
+-- ELDOSTORE — Copia rápida previa a la migración 003 (dentro de la misma base)
+--
+-- ESTO NO REEMPLAZA AL RESPALDO INTEGRAL. El respaldo integral (restaurable, fuera de
+-- Supabase) es el workflow "Respaldo Supabase" de GitHub Actions o el respaldo diario
+-- del plan Pro. Esta copia es complementaria: permite revisar o recuperar filas desde
+-- el SQL Editor sin computadora, y guarda los totales de control para el paso posterior.
+-- No copia: usuarios de Auth, archivos de Storage, índices, restricciones ni triggers.
 --
 -- Copia TODAS las tablas del esquema public, las definiciones de las funciones y las
 -- políticas actuales a un esquema aparte, "respaldo_003". No modifica ni borra nada
