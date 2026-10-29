@@ -17,6 +17,12 @@
    de base de datos (RPC) definidas en data/schema-supabase.sql, en una
    sola transacción atómica — así se evita que una venta descuente stock
    dos veces, incluso si dos dispositivos actúan al mismo tiempo.
+
+   Actualización 003 (tres cuentas: ELDOSTORE, Niko, Ayelen):
+   - Lectura paginada de todas las tablas (sin el límite de 1.000 filas).
+   - Si la migración 003 está aplicada en Supabase, las operaciones usan las
+     funciones v3 (cuenta + quién tiene el dinero). Si NO está aplicada, el
+     panel funciona exactamente igual que antes (funciones v2).
    ========================================================================== */
 
 const DB = {
@@ -28,6 +34,9 @@ const DB = {
   expenses: [],
   cashMovements: [],
   shipments: [],
+  saleAllocations: [],
+  expenseAllocations: [],
+  transfers: [],
   config: {
     shippingRates: [
       { min: 1, max: 5, costo: 1500 },
@@ -43,6 +52,47 @@ const DB = {
 /* Estado de la migración 002 en Supabase: se detecta al cargar los datos
    (si las filas traen la columna "anulada") o al llamar a una función nueva. */
 const MIGRACION_002 = { detectada: false };
+
+/* Estado de la migración 003 (tres cuentas). Se detecta al cargar: si existe
+   la tabla "accounts", el panel trabaja en modo cuentas. */
+const CUENTAS = {
+  activa: false,        // migración 003 aplicada
+  habilitado: false,    // el usuario actual está en app_users
+  accounts: [], holders: [], users: [],
+  miUserId: null, miHolderId: null
+};
+
+/* Lectura paginada: Supabase entrega como máximo un número fijo de filas por
+   consulta (por defecto 1.000). fetchAll pide de a páginas hasta traer todas y
+   compara con el total que informa Supabase. Si no coinciden, lo avisa. */
+const PAGINA = 1000;
+const LECTURA = { incompletas: [] };
+
+async function fetchAll(tabla, { orden = null, asc = false, clave = 'id' } = {}) {
+  let filas = [];
+  let total = null;
+  for (let vuelta = 0; vuelta < 1000; vuelta++) {
+    let q = sb.from(tabla).select('*', filas.length === 0 ? { count: 'exact' } : undefined);
+    if (orden) q = q.order(orden, { ascending: asc });
+    q = q.order(clave, { ascending: true }).range(filas.length, filas.length + PAGINA - 1);
+    const { data, error, count } = await q;
+    if (error) throw Object.assign(new Error(error.message || ('Error al leer ' + tabla)), { code: error.code, tabla });
+    if (total === null && typeof count === 'number') total = count;
+    filas = filas.concat(data || []);
+    if (!data || data.length === 0 || (total !== null && filas.length >= total)) break;
+  }
+  LECTURA.incompletas = LECTURA.incompletas.filter(t => t !== tabla);
+  if (total !== null && filas.length !== total) {
+    LECTURA.incompletas.push(tabla);
+    console.warn(`Lectura incompleta de ${tabla}: ${filas.length} de ${total} filas.`);
+  }
+  return filas;
+}
+
+function esTablaInexistente(err) {
+  const msg = (err && (err.message || '')) + ' ' + (err && err.code || '');
+  return /PGRST205|42P01|does not exist|Could not find the table|schema cache/i.test(msg);
+}
 
 /* Traduce errores de las funciones de la migración 002 a un mensaje claro. */
 function rpcErrorMessage(error) {
@@ -84,7 +134,7 @@ function rowToProduct(r) {
     id: r.id, codigo: r.codigo, nombre: r.nombre, categoria: r.categoria,
     costo: Number(r.costo), precio: Number(r.precio), stock: Number(r.stock),
     stockMin: Number(r.stock_min), foto: r.foto, activo: r.activo,
-    revisar: r.revisar, creado: r.creado
+    revisar: r.revisar, creado: r.creado, ownerAccountId: r.owner_account_id || null
   };
   return computeProductFields(p);
 }
@@ -104,7 +154,8 @@ function rowToOrder(r) {
    por defecto equivalentes a "venta propia, sin comisión, no anulada". */
 function anulacionFields(r) {
   if (r.anulada !== undefined) MIGRACION_002.detectada = true;
-  return { anulada: !!r.anulada, anuladaEl: r.anulada_el || null, motivoAnulacion: r.motivo_anulacion || '', corrigeA: r.corrige_a || null };
+  return { anulada: !!r.anulada, anuladaEl: r.anulada_el || null, motivoAnulacion: r.motivo_anulacion || '', corrigeA: r.corrige_a || null,
+           creadoPor: r.creado_por || null, anuladoPor: r.anulado_por || null };
 }
 function rowToSale(r) {
   return {
@@ -112,6 +163,7 @@ function rowToSale(r) {
     total: Number(r.total), costoTotal: Number(r.costo_total), ganancia: Number(r.ganancia),
     metodoPago: r.metodo_pago, pedidoId: r.pedido_id,
     modalidad: r.modalidad || 'propia', comisionTotal: Number(r.comision_total) || 0,
+    holderId: r.holder_id || null,
     ...anulacionFields(r)
   };
 }
@@ -120,14 +172,16 @@ function rowToPurchase(r) {
     id: r.id, fecha: r.fecha, proveedor: r.proveedor, productoId: r.producto_id,
     cantidad: Number(r.cantidad), costoUnit: Number(r.costo_unit), total: Number(r.total),
     metodoPago: r.metodo_pago, notas: r.notas,
+    accountId: r.account_id || null, holderId: r.holder_id || null,
     ...anulacionFields(r)
   };
 }
 function rowToExpense(r) {
-  return { id: r.id, fecha: r.fecha, descripcion: r.descripcion, categoria: r.categoria, importe: Number(r.importe), metodoPago: r.metodo_pago, notas: r.notas, ...anulacionFields(r) };
+  return { id: r.id, fecha: r.fecha, descripcion: r.descripcion, categoria: r.categoria, importe: Number(r.importe), metodoPago: r.metodo_pago, notas: r.notas, holderId: r.holder_id || null, ...anulacionFields(r) };
 }
 function rowToCash(r) {
-  return { id: r.id, fecha: r.fecha, tipo: r.tipo, origen: r.origen, monto: Number(r.monto), descripcion: r.descripcion, refId: r.ref_id };
+  return { id: r.id, fecha: r.fecha, tipo: r.tipo, origen: r.origen, monto: Number(r.monto), descripcion: r.descripcion, refId: r.ref_id,
+           accountId: r.account_id || null, holderId: r.holder_id || null, anulaA: r.anula_a || null, creadoPor: r.creado_por || null };
 }
 function rowToShipment(r) {
   return { id: r.id, clienteId: r.cliente_id, direccion: r.direccion, localidad: r.localidad, pedidoId: r.pedido_id, costoEnvio: Number(r.costo_envio), estado: r.estado, fecha: r.fecha, observaciones: r.observaciones };
@@ -140,71 +194,115 @@ function rowToConfig(r) {
 
 async function refreshAll() {
   const [prod, cli, ord, ven, com, gas, caja, env, cfg] = await Promise.all([
-    sb.from('products').select('*').order('codigo'),
-    sb.from('clients').select('*').order('nombre'),
-    sb.from('orders').select('*').order('fecha', { ascending: false }),
-    sb.from('sales').select('*').order('fecha', { ascending: false }),
-    sb.from('purchases').select('*').order('fecha', { ascending: false }),
-    sb.from('expenses').select('*').order('fecha', { ascending: false }),
-    sb.from('cash_movements').select('*').order('fecha', { ascending: false }),
-    sb.from('shipments').select('*').order('fecha', { ascending: false }),
+    fetchAll('products', { orden: 'codigo', asc: true }),
+    fetchAll('clients', { orden: 'nombre', asc: true }),
+    fetchAll('orders', { orden: 'fecha' }),
+    fetchAll('sales', { orden: 'fecha' }),
+    fetchAll('purchases', { orden: 'fecha' }),
+    fetchAll('expenses', { orden: 'fecha' }),
+    fetchAll('cash_movements', { orden: 'fecha' }),
+    fetchAll('shipments', { orden: 'fecha' }),
     sb.from('app_config').select('*').eq('id', 1).maybeSingle()
   ]);
-  throwIfError(prod.error, 'cargar productos');
-  throwIfError(cli.error, 'cargar clientes');
-  throwIfError(ord.error, 'cargar pedidos');
-  throwIfError(ven.error, 'cargar ventas');
-  throwIfError(com.error, 'cargar compras');
-  throwIfError(gas.error, 'cargar gastos');
-  throwIfError(caja.error, 'cargar caja');
-  throwIfError(env.error, 'cargar envíos');
   throwIfError(cfg.error, 'cargar configuración');
 
-  DB.products = prod.data.map(rowToProduct);
-  DB.clients = cli.data.map(rowToClient);
-  DB.orders = ord.data.map(rowToOrder);
-  DB.sales = ven.data.map(rowToSale);
-  DB.purchases = com.data.map(rowToPurchase);
-  DB.expenses = gas.data.map(rowToExpense);
-  DB.cashMovements = caja.data.map(rowToCash);
-  DB.shipments = env.data.map(rowToShipment);
+  DB.products = prod.map(rowToProduct);
+  DB.clients = cli.map(rowToClient);
+  DB.orders = ord.map(rowToOrder);
+  DB.sales = ven.map(rowToSale);
+  DB.purchases = com.map(rowToPurchase);
+  DB.expenses = gas.map(rowToExpense);
+  DB.cashMovements = caja.map(rowToCash);
+  DB.shipments = env.map(rowToShipment);
   if (cfg.data) DB.config = rowToConfig(cfg.data);
+  await loadCuentas();
 }
 
-async function refreshProducts() {
-  const { data, error } = await sb.from('products').select('*').order('codigo');
-  throwIfError(error, 'actualizar productos');
-  DB.products = data.map(rowToProduct);
+/* Carga cuentas, custodios, usuarios y repartos si la migración 003 está aplicada. */
+/* Orden fijo en pantalla (todas se crean en el mismo instante, así que "creado" no alcanza). */
+const ORDEN_CODIGOS = ['eldostore', 'diego', 'niko', 'ayelen'];
+function ordenarPorCodigo(lista) {
+  const pos = c => { const i = ORDEN_CODIGOS.indexOf(c); return i < 0 ? 99 : i; };
+  return lista.slice().sort((a, b) => pos(a.codigo) - pos(b.codigo) || String(a.nombre).localeCompare(String(b.nombre)));
 }
-async function refreshSales() {
-  const { data, error } = await sb.from('sales').select('*').order('fecha', { ascending: false });
-  throwIfError(error, 'actualizar ventas');
-  DB.sales = data.map(rowToSale);
+
+async function loadCuentas() {
+  let accounts;
+  try {
+    accounts = await fetchAll('accounts', { orden: 'creado', asc: true });
+  } catch (e) {
+    if (!esTablaInexistente(e)) console.warn('No se pudieron leer las cuentas:', e);
+    CUENTAS.activa = false; CUENTAS.habilitado = false;
+    return;
+  }
+  CUENTAS.activa = true;
+  CUENTAS.accounts = ordenarPorCodigo(accounts);
+  CUENTAS.habilitado = accounts.length > 0;   // RLS: un usuario no habilitado no ve ninguna cuenta
+  if (!CUENTAS.habilitado) return;
+  const [holders, users, sa, ea, tr] = await Promise.all([
+    fetchAll('cash_holders', { orden: 'creado', asc: true }),
+    fetchAll('app_users', { clave: 'user_id' }),
+    fetchAll('sale_allocations'),
+    fetchAll('expense_allocations'),
+    fetchAll('account_transfers', { orden: 'fecha' })
+  ]);
+  CUENTAS.holders = ordenarPorCodigo(holders);
+  CUENTAS.users = users;
+  DB.saleAllocations = sa.map(rowToAllocation);
+  DB.expenseAllocations = ea.map(r => ({ id: r.id, expenseId: r.expense_id, accountId: r.account_id, importe: Number(r.importe), origen: r.origen }));
+  DB.transfers = tr.map(rowToTransfer);
+  const session = await getCurrentSession();
+  CUENTAS.miUserId = session && session.user ? session.user.id : null;
+  const yo = users.find(u => u.user_id === CUENTAS.miUserId);
+  CUENTAS.miHolderId = yo ? yo.holder_id : null;
 }
-async function refreshPurchases() {
-  const { data, error } = await sb.from('purchases').select('*').order('fecha', { ascending: false });
-  throwIfError(error, 'actualizar compras');
-  DB.purchases = data.map(rowToPurchase);
+
+function rowToAllocation(r) {
+  return { id: r.id, saleId: r.sale_id, accountId: r.account_id, total: Number(r.total), costo: Number(r.costo),
+           comision: Number(r.comision), ganancia: Number(r.ganancia), anulada: !!r.anulada, origen: r.origen };
 }
-async function refreshExpenses() {
-  const { data, error } = await sb.from('expenses').select('*').order('fecha', { ascending: false });
-  throwIfError(error, 'actualizar gastos');
-  DB.expenses = data.map(rowToExpense);
+function rowToTransfer(r) {
+  return { id: r.id, fecha: r.fecha, tipo: r.tipo, fromAccountId: r.from_account_id, fromHolderId: r.from_holder_id,
+           toAccountId: r.to_account_id, toHolderId: r.to_holder_id, monto: Number(r.monto), motivo: r.motivo || '',
+           creadoPor: r.creado_por, anulada: !!r.anulada, anuladaEl: r.anulada_el, anuladoPor: r.anulado_por,
+           motivoAnulacion: r.motivo_anulacion || '' };
 }
-async function refreshCash() {
-  const { data, error } = await sb.from('cash_movements').select('*').order('fecha', { ascending: false });
-  throwIfError(error, 'actualizar caja');
-  DB.cashMovements = data.map(rowToCash);
-}
-async function refreshOrders() {
-  const { data, error } = await sb.from('orders').select('*').order('fecha', { ascending: false });
-  throwIfError(error, 'actualizar pedidos');
-  DB.orders = data.map(rowToOrder);
-}
+
+async function refreshProducts() { DB.products = (await fetchAll('products', { orden: 'codigo', asc: true })).map(rowToProduct); }
+async function refreshSales() { DB.sales = (await fetchAll('sales', { orden: 'fecha' })).map(rowToSale); }
+async function refreshPurchases() { DB.purchases = (await fetchAll('purchases', { orden: 'fecha' })).map(rowToPurchase); }
+async function refreshExpenses() { DB.expenses = (await fetchAll('expenses', { orden: 'fecha' })).map(rowToExpense); }
+async function refreshCash() { DB.cashMovements = (await fetchAll('cash_movements', { orden: 'fecha' })).map(rowToCash); }
+async function refreshOrders() { DB.orders = (await fetchAll('orders', { orden: 'fecha' })).map(rowToOrder); }
 async function refreshConfig() {
   const { data, error } = await sb.from('app_config').select('*').eq('id', 1).maybeSingle();
   throwIfError(error, 'actualizar configuración');
   if (data) DB.config = rowToConfig(data);
+}
+async function refreshRepartos() {
+  if (!CUENTAS.activa || !CUENTAS.habilitado) return;
+  const [sa, ea, tr] = await Promise.all([fetchAll('sale_allocations'), fetchAll('expense_allocations'), fetchAll('account_transfers', { orden: 'fecha' })]);
+  DB.saleAllocations = sa.map(rowToAllocation);
+  DB.expenseAllocations = ea.map(r => ({ id: r.id, expenseId: r.expense_id, accountId: r.account_id, importe: Number(r.importe), origen: r.origen }));
+  DB.transfers = tr.map(rowToTransfer);
+}
+
+/* -------------------------- CUENTAS: AYUDAS ---------------------------- */
+
+function modoCuentas() { return CUENTAS.activa && CUENTAS.habilitado; }
+function cuentaEldostoreId() { const a = CUENTAS.accounts.find(x => x.codigo === 'eldostore'); return a ? a.id : null; }
+function accountName(id) { const a = CUENTAS.accounts.find(x => x.id === id); return a ? a.nombre : '—'; }
+function holderName(id) { const h = CUENTAS.holders.find(x => x.id === id); return h ? h.nombre : '—'; }
+function userName(uid) { if (!uid) return '—'; const u = CUENTAS.users.find(x => x.user_id === uid); return u ? (u.nombre || 'usuario') : 'usuario'; }
+/* Dueño de una línea de venta: las líneas anteriores a la 003 no lo tienen → ELDOSTORE. */
+function cuentaDeLinea(item) { return (item && item.ownerAccountId) || cuentaEldostoreId(); }
+function allocationsDeVenta(saleId) { return DB.saleAllocations.filter(a => a.saleId === saleId); }
+function partesDeGasto(expenseId) { return DB.expenseAllocations.filter(a => a.expenseId === expenseId); }
+
+async function rpcCuentas(nombre, args) {
+  const { data, error } = await sb.rpc(nombre, args);
+  if (error) throw new Error(error.message);
+  return data;
 }
 
 /* ---------------------------- PRODUCTOS -------------------------------- */
@@ -234,6 +332,7 @@ async function addProduct(data) {
     stock_min: Number(data.stockMin) || 0,
     revisar: !!data.revisar
   };
+  if (modoCuentas() && data.ownerAccountId) payload.owner_account_id = data.ownerAccountId;
   const { data: row, error } = await sb.from('products').insert(payload).select().single();
   throwIfError(error, 'crear producto');
   const p = rowToProduct(row);
@@ -265,6 +364,11 @@ if (data.foto !== undefined) payload.foto = data.foto;
   return p;
 }
 
+async function setProductOwner(productId, accountId, motivo) {
+  await rpcCuentas('set_product_owner', { p_product_id: productId, p_account_id: accountId, p_motivo: motivo });
+  await refreshProducts();
+}
+
 async function deleteProduct(id) {
   const { error } = await sb.from('products').delete().eq('id', id);
   throwIfError(error, 'eliminar producto');
@@ -276,7 +380,12 @@ async function deleteProduct(id) {
    un solo administrador ajustando stock a mano, este método es suficiente.
    Antes de escribir, relee el valor actual desde Supabase para minimizar
    el riesgo de pisar un cambio hecho desde otro dispositivo. */
-async function adjustStock(productId, delta) {
+async function adjustStock(productId, delta, motivo) {
+  if (modoCuentas()) {
+    await rpcCuentas('adjust_stock_v3', { p_product_id: productId, p_delta: Number(delta), p_motivo: motivo || '' });
+    await refreshProducts();
+    return DB.products.find(x => x.id === productId);
+  }
   const { data: actual, error: errLectura } = await sb.from('products').select('stock').eq('id', productId).single();
   throwIfError(errLectura, 'leer stock actual');
   const nuevoStock = Number(actual.stock) + Number(delta);
@@ -460,7 +569,14 @@ async function updateOrderStatus(id, estado) {
 
 /* Convierte un pedido en venta llamando al RPC transaccional (evita doble
    descuento de stock incluso con dos dispositivos actuando a la vez). */
-async function convertOrderToSale(orderId, metodoPago) {
+async function convertOrderToSale(orderId, metodoPago, holderId) {
+  if (modoCuentas()) {
+    try {
+      const data = await rpcCuentas('convert_order_to_sale_v3', { p_order_id: orderId, p_metodo_pago: metodoPago || null, p_holder_id: holderId || null });
+      await Promise.all([refreshProducts(), refreshSales(), refreshOrders(), refreshCash(), refreshRepartos()]);
+      return { venta: data };
+    } catch (e) { return { error: e.message }; }
+  }
   const { data, error } = await sb.rpc('convert_order_to_sale', { p_order_id: orderId, p_metodo_pago: metodoPago || null });
   if (error) return { error: error.message };
   await Promise.all([refreshProducts(), refreshSales(), refreshOrders(), refreshCash()]);
@@ -509,7 +625,17 @@ function saleItemsPayload(items, modalidad) {
    register_sale_v2: valida stock, descuenta, calcula costo, comisión y
    ganancia, y registra el ingreso (y el egreso de comisión) en caja, todo
    en una sola transacción. */
-async function registerSale({ clienteId, items, metodoPago, modalidad }) {
+async function registerSale({ clienteId, items, metodoPago, modalidad, holderId }) {
+  if (modoCuentas()) {
+    try {
+      const data = await rpcCuentas('register_sale_v3', {
+        p_cliente_id: clienteId || null, p_items: saleItemsPayload(items, modalidad),
+        p_metodo_pago: metodoPago || '', p_modalidad: modalidad, p_holder_id: holderId || null
+      });
+      await Promise.all([refreshProducts(), refreshSales(), refreshCash(), refreshRepartos()]);
+      return { venta: data };
+    } catch (e) { return { error: e.message }; }
+  }
   const { data, error } = await sb.rpc('register_sale_v2', {
     p_cliente_id: clienteId || null, p_items: saleItemsPayload(items, modalidad),
     p_metodo_pago: metodoPago || '', p_modalidad: modalidad
@@ -526,14 +652,27 @@ async function registerSale({ clienteId, items, metodoPago, modalidad }) {
    correcta, en una sola transacción; la nueva queda vinculada a la
    original (corrige_a). */
 
-async function voidSale(id, motivo) {
+async function voidSale(id, motivo, holderId) {
+  if (modoCuentas()) {
+    const data = await rpcCuentas('void_sale_v3', { p_sale_id: id, p_motivo: motivo, p_holder_id: holderId || null });
+    await Promise.all([refreshProducts(), refreshSales(), refreshCash(), refreshOrders(), refreshRepartos()]);
+    return data;
+  }
   const { data, error } = await sb.rpc('void_sale', { p_sale_id: id, p_motivo: motivo });
   if (error) throw new Error(rpcErrorMessage(error));
   await Promise.all([refreshProducts(), refreshSales(), refreshCash(), refreshOrders()]);
   return data;
 }
 
-async function correctSale(id, motivo, { clienteId, items, metodoPago, modalidad }) {
+async function correctSale(id, motivo, { clienteId, items, metodoPago, modalidad, holderId }) {
+  if (modoCuentas()) {
+    const data = await rpcCuentas('correct_sale_v3', {
+      p_sale_id: id, p_motivo: motivo, p_cliente_id: clienteId || null,
+      p_items: saleItemsPayload(items, modalidad), p_metodo_pago: metodoPago || '', p_modalidad: modalidad, p_holder_id: holderId || null
+    });
+    await Promise.all([refreshProducts(), refreshSales(), refreshCash(), refreshOrders(), refreshRepartos()]);
+    return data;
+  }
   const { data, error } = await sb.rpc('correct_sale', {
     p_sale_id: id, p_motivo: motivo, p_cliente_id: clienteId || null,
     p_items: saleItemsPayload(items, modalidad), p_metodo_pago: metodoPago || '', p_modalidad: modalidad
@@ -543,7 +682,12 @@ async function correctSale(id, motivo, { clienteId, items, metodoPago, modalidad
   return data;
 }
 
-async function voidPurchase(id, motivo) {
+async function voidPurchase(id, motivo, holderId) {
+  if (modoCuentas()) {
+    const data = await rpcCuentas('void_purchase_v3', { p_purchase_id: id, p_motivo: motivo, p_holder_id: holderId || null });
+    await Promise.all([refreshProducts(), refreshPurchases(), refreshCash()]);
+    return data;
+  }
   const { data, error } = await sb.rpc('void_purchase', { p_purchase_id: id, p_motivo: motivo });
   if (error) throw new Error(rpcErrorMessage(error));
   await Promise.all([refreshProducts(), refreshPurchases(), refreshCash()]);
@@ -551,6 +695,15 @@ async function voidPurchase(id, motivo) {
 }
 
 async function correctPurchase(id, motivo, data) {
+  if (modoCuentas()) {
+    const r = await rpcCuentas('correct_purchase_v3', {
+      p_purchase_id: id, p_motivo: motivo, p_proveedor: data.proveedor || '', p_producto_id: data.productoId,
+      p_cantidad: Number(data.cantidad), p_costo_unit: Number(data.costoUnit),
+      p_metodo_pago: data.metodoPago || '', p_notas: data.notas || '', p_holder_id: data.holderId || null
+    });
+    await Promise.all([refreshProducts(), refreshPurchases(), refreshCash()]);
+    return r;
+  }
   const { data: r, error } = await sb.rpc('correct_purchase', {
     p_purchase_id: id, p_motivo: motivo, p_proveedor: data.proveedor || '', p_producto_id: data.productoId,
     p_cantidad: Number(data.cantidad), p_costo_unit: Number(data.costoUnit),
@@ -561,7 +714,12 @@ async function correctPurchase(id, motivo, data) {
   return r;
 }
 
-async function voidExpense(id, motivo) {
+async function voidExpense(id, motivo, holderId) {
+  if (modoCuentas()) {
+    const data = await rpcCuentas('void_expense_v3', { p_expense_id: id, p_motivo: motivo, p_holder_id: holderId || null });
+    await Promise.all([refreshExpenses(), refreshCash(), refreshRepartos()]);
+    return data;
+  }
   const { data, error } = await sb.rpc('void_expense', { p_expense_id: id, p_motivo: motivo });
   if (error) throw new Error(rpcErrorMessage(error));
   await Promise.all([refreshExpenses(), refreshCash()]);
@@ -569,6 +727,15 @@ async function voidExpense(id, motivo) {
 }
 
 async function correctExpense(id, motivo, data) {
+  if (modoCuentas()) {
+    const r = await rpcCuentas('correct_expense_v3', {
+      p_expense_id: id, p_motivo: motivo, p_descripcion: data.descripcion, p_categoria: data.categoria || '',
+      p_importe: Number(data.importe), p_metodo_pago: data.metodoPago || '', p_notas: data.notas || '',
+      p_partes: data.partes, p_holder_id: data.holderId || null
+    });
+    await Promise.all([refreshExpenses(), refreshCash(), refreshRepartos()]);
+    return r;
+  }
   const { data: r, error } = await sb.rpc('correct_expense', {
     p_expense_id: id, p_motivo: motivo, p_descripcion: data.descripcion, p_categoria: data.categoria || '',
     p_importe: Number(data.importe), p_metodo_pago: data.metodoPago || '', p_notas: data.notas || ''
@@ -603,6 +770,15 @@ function salesSummary(ventas) {
 /* ------------------------------ COMPRAS -------------------------------- */
 
 async function registerPurchase(data) {
+  if (modoCuentas()) {
+    const resultado = await rpcCuentas('register_purchase_v3', {
+      p_proveedor: data.proveedor || '', p_producto_id: data.productoId,
+      p_cantidad: Number(data.cantidad), p_costo_unit: Number(data.costoUnit),
+      p_metodo_pago: data.metodoPago || '', p_notas: data.notas || '', p_holder_id: data.holderId || null
+    });
+    await Promise.all([refreshProducts(), refreshPurchases(), refreshCash()]);
+    return resultado;
+  }
   const { data: resultado, error } = await sb.rpc('register_purchase', {
     p_proveedor: data.proveedor || '', p_producto_id: data.productoId,
     p_cantidad: Number(data.cantidad), p_costo_unit: Number(data.costoUnit),
@@ -616,6 +792,14 @@ async function registerPurchase(data) {
 /* ------------------------------- GASTOS -------------------------------- */
 
 async function registerExpense(data) {
+  if (modoCuentas()) {
+    const r = await rpcCuentas('register_expense_v3', {
+      p_descripcion: data.descripcion, p_categoria: data.categoria || 'General', p_importe: Number(data.importe),
+      p_metodo_pago: data.metodoPago || '', p_notas: data.notas || '', p_partes: data.partes, p_holder_id: data.holderId || null
+    });
+    await Promise.all([refreshExpenses(), refreshCash(), refreshRepartos()]);
+    return r;
+  }
   const payload = { descripcion: data.descripcion, categoria: data.categoria || 'General', importe: Number(data.importe) || 0, metodo_pago: data.metodoPago || '', notas: data.notas || '' };
   const { data: row, error } = await sb.from('expenses').insert(payload).select().single();
   throwIfError(error, 'registrar gasto');
@@ -642,8 +826,45 @@ async function addManualCashMovement(tipo, monto, descripcion) {
   return mov;
 }
 
-function cashBalance() {
-  return round2(DB.cashMovements.reduce((a, m) => a + (m.tipo === 'ingreso' ? m.monto : -m.monto), 0));
+function cashBalance(filtro) {
+  const lista = filtro ? DB.cashMovements.filter(filtro) : DB.cashMovements;
+  return round2(lista.reduce((a, m) => a + (m.tipo === 'ingreso' ? m.monto : -m.monto), 0));
+}
+
+/* ---------------------- MOVIMIENTOS ENTRE CUENTAS ------------------------ */
+
+const TIPOS_MOVIMIENTO = {
+  liquidacion: 'Liquidación (entrega de dinero cobrado por otro)',
+  reparto: 'Reparto extraordinario entre cuentas',
+  retiro: 'Retiro personal',
+  aporte: 'Aporte de dinero',
+  apertura: 'Saldo inicial (apertura)'
+};
+
+async function registerTransfer({ tipo, fromAccountId, fromHolderId, toAccountId, toHolderId, monto, motivo }) {
+  const r = await rpcCuentas('register_transfer', {
+    p_tipo: tipo, p_from_account: fromAccountId || null, p_from_holder: fromHolderId || null,
+    p_to_account: toAccountId || null, p_to_holder: toHolderId || null, p_monto: Number(monto), p_motivo: motivo || ''
+  });
+  await Promise.all([refreshCash(), refreshRepartos()]);
+  return r;
+}
+
+async function voidTransfer(id, motivo) {
+  const r = await rpcCuentas('void_transfer', { p_transfer_id: id, p_motivo: motivo });
+  await Promise.all([refreshCash(), refreshRepartos()]);
+  return r;
+}
+
+async function resumenCuentas(desde, hasta) {
+  return await rpcCuentas('resumen_cuentas', { p_desde: desde || null, p_hasta: hasta || null }) || [];
+}
+async function posicionesCaja() { return await rpcCuentas('posiciones_caja', {}) || []; }
+
+async function vincularUsuario(email, holderId, activo = true) {
+  const r = await rpcCuentas('vincular_usuario', { p_email: email, p_holder_id: holderId, p_activo: activo });
+  CUENTAS.users = await fetchAll('app_users', { clave: 'user_id' });
+  return r;
 }
 
 /* ------------------------------- ENVÍOS ---------------------------------- */
@@ -720,7 +941,8 @@ function last7DaysSeries() {
 /* Exporta una foto actual de lo que hay en Supabase (copia de seguridad
    local adicional; la fuente de verdad sigue siendo Supabase). */
 function exportBackupJSON() {
-  return JSON.stringify({ ...DB, exportadoEl: nowISO() }, null, 2);
+  return JSON.stringify({ ...DB, cuentas: CUENTAS.activa ? { accounts: CUENTAS.accounts, holders: CUENTAS.holders } : null,
+    lecturaIncompleta: LECTURA.incompletas, exportadoEl: nowISO() }, null, 2);
 }
 
 /* Restaura un respaldo SOLO para productos (por código, upsert) — no

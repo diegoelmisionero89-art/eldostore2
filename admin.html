@@ -42,6 +42,7 @@
       <div class="nav-item" data-view="compras"><span class="ico">🛍️</span> Compras</div>
       <div class="nav-item" data-view="gastos"><span class="ico">💸</span> Gastos</div>
       <div class="nav-item" data-view="caja"><span class="ico">💵</span> Caja</div>
+      <div class="nav-item solo-cuentas" data-view="cuentas"><span class="ico">🤝</span> Cuentas</div>
       <div class="nav-item" data-view="envios"><span class="ico">🚚</span> Envíos</div>
       <div class="nav-item" data-view="reportes"><span class="ico">📈</span> Reportes</div>
       <div class="nav-item" data-view="config"><span class="ico">⚙️</span> Configuración</div>
@@ -60,10 +61,12 @@
     </div>
 
     <div class="content">
+      <div id="avisoLectura"></div>
 
       <!-- ---------- DASHBOARD ---------- -->
       <section class="view active" id="view-dashboard">
         <div class="grid grid-4" id="kpiGrid"></div>
+        <div class="grid grid-3 solo-cuentas" id="dashCuentas" style="margin-top:16px"></div>
         <div class="panel" style="margin-top:20px">
           <h3>Ventas últimos 7 días</h3>
           <div class="chart-bars" id="salesChart"></div>
@@ -85,6 +88,7 @@
           <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted)">
             <input type="checkbox" id="prodNoStock" style="width:auto"> Sin stock
           </label>
+          <select id="prodOwnerFilter" class="solo-cuentas"></select>
           <div class="spacer"></div>
           <button class="btn btn-sm" onclick="openImportModal()">Importar CSV</button>
           <button class="btn btn-primary btn-sm" onclick="openProductModal()">+ Nuevo producto</button>
@@ -92,7 +96,7 @@
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Código</th><th>Nombre</th><th>Categoría</th><th>Costo</th><th>Precio</th>
+              <th>Código</th><th>Nombre</th><th class="solo-cuentas">Cuenta</th><th>Categoría</th><th>Costo</th><th>Precio</th>
               <th>Ganancia u.</th><th>Margen</th><th>Stock</th><th>Valor stock</th><th></th>
             </tr></thead>
             <tbody id="prodTableBody"></tbody>
@@ -197,13 +201,16 @@
           <div class="kpi gold"><span>Saldo de caja</span><strong id="cajaSaldo">$0</strong></div>
         </div>
         <div class="toolbar">
+          <select id="cajaCuentaFilter" class="solo-cuentas"></select>
+          <select id="cajaHolderFilter" class="solo-cuentas"></select>
           <div class="spacer"></div>
-          <button class="btn btn-sm" onclick="openCashModal('ingreso')">+ Ingreso manual</button>
-          <button class="btn btn-sm" onclick="openCashModal('egreso')">+ Egreso manual</button>
+          <button class="btn btn-sm sin-cuentas" onclick="openCashModal('ingreso')">+ Ingreso manual</button>
+          <button class="btn btn-sm sin-cuentas" onclick="openCashModal('egreso')">+ Egreso manual</button>
+          <button class="btn btn-primary btn-sm solo-cuentas" onclick="openTransferModal()">+ Movimiento entre cuentas</button>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Fecha</th><th>Tipo</th><th>Origen</th><th>Descripción</th><th>Monto</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Tipo</th><th>Origen</th><th class="solo-cuentas">Cuenta</th><th class="solo-cuentas">Tiene el dinero</th><th>Descripción</th><th>Monto</th></tr></thead>
             <tbody id="cajaTableBody"></tbody>
           </table>
         </div>
@@ -240,6 +247,7 @@
         <div class="toolbar">
           <div class="field" style="margin:0"><label>Desde</label><input type="date" id="repDesde"></div>
           <div class="field" style="margin:0"><label>Hasta</label><input type="date" id="repHasta"></div>
+          <div class="field solo-cuentas" style="margin:0"><label>Cuenta</label><select id="repCuenta"></select></div>
           <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="renderReportes()">Aplicar filtro</button>
         </div>
         <div class="grid grid-4" id="repKpis" style="margin-bottom:20px"></div>
@@ -254,8 +262,52 @@
         </div>
       </section>
 
+      <!-- ---------- CUENTAS (solo con la migración 003) ---------- -->
+      <section class="view" id="view-cuentas">
+        <div class="toolbar">
+          <div class="field" style="margin:0"><label>Desde</label><input type="date" id="ctaDesde"></div>
+          <div class="field" style="margin:0"><label>Hasta</label><input type="date" id="ctaHasta"></div>
+          <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="renderCuentas()">Aplicar filtro</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="openTransferModal()">+ Movimiento entre cuentas</button>
+        </div>
+        <div class="grid grid-3" id="ctaResumen"></div>
+        <p style="font-size:.8rem;color:var(--muted);margin:4px 0 16px">Ganancia neta = ventas − costo − comisiones − su parte de los gastos. El saldo de caja es el total, sin filtro de fechas. No incluye anulaciones.</p>
+        <div class="panel">
+          <h3>¿Quién tiene el dinero de cada cuenta?</h3>
+          <div class="table-wrap"><table id="ctaPosiciones"></table></div>
+          <p style="font-size:.8rem;color:var(--muted);margin-top:8px">Para pasar dinero cobrado por otra persona a su dueño, registrá una liquidación.</p>
+        </div>
+        <div class="panel">
+          <h3>Movimientos entre cuentas</h3>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted);margin-bottom:8px">
+            <input type="checkbox" id="ctaVerAnulados" style="width:auto;min-width:0;padding:0"> Mostrar anulados
+          </label>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Fecha</th><th>Tipo</th><th>Desde</th><th>Hacia</th><th>Monto</th><th>Motivo</th><th></th></tr></thead>
+            <tbody id="ctaTransfers"></tbody>
+          </table></div>
+        </div>
+      </section>
+
       <!-- ---------- CONFIGURACIÓN ---------- -->
       <section class="view" id="view-config">
+        <div class="panel solo-cuentas">
+          <h3>Usuarios del panel</h3>
+          <p style="color:var(--muted);font-size:.85rem;margin-bottom:12px">Solo los usuarios activos de esta lista pueden usar el panel; los demás quedan pendientes hasta que el administrador los autorice. Cada uno queda asociado a la persona que tiene el dinero cuando cobra o paga. La persona primero tiene que existir en Supabase Auth.</p>
+          <div class="table-wrap"><table><thead><tr><th>Usuario</th><th>Persona</th><th>Estado</th></tr></thead><tbody id="cfgUsuarios"></tbody></table></div>
+          <p id="cfgSoloAdmin" style="color:var(--muted);font-size:.85rem;margin-top:10px">Solo el administrador puede autorizar, desactivar o modificar usuarios.</p>
+          <div id="cfgAdminForm">
+          <div class="two-col" style="margin-top:12px">
+            <div class="field"><label>Email</label><input type="email" id="cfgEmail" autocomplete="off"></div>
+            <div class="field"><label>Persona</label><select id="cfgHolder"></select></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--muted);margin-bottom:10px">
+            <input type="checkbox" id="cfgActivo" checked style="width:auto;min-width:0;padding:0"> Activo
+          </label>
+          <button class="btn btn-sm" onclick="handleVincularUsuario()">Agregar / actualizar usuario</button>
+          </div>
+        </div>
         <div class="panel">
           <h3>Respaldo de datos</h3>
           <p style="color:var(--muted);font-size:.88rem;margin-bottom:14px">

@@ -11,6 +11,11 @@
    await porque escriben directo en Supabase. Todas están envueltas en
    try/catch para mostrar un error claro si falla la conexión o si Supabase
    rechaza la operación (por ejemplo, stock insuficiente).
+
+   Actualización 003: si la migración de tres cuentas está aplicada, se agregan
+   la cuenta (dueño) y quién tiene el dinero en cada operación, el reparto de
+   gastos, los movimientos entre cuentas y la pantalla "Cuentas". Los elementos
+   del HTML con la clase "solo-cuentas" solo se ven en ese modo.
    ========================================================================== */
 
 const CATEGORIAS = ['Electrónica', 'Celulares', 'Smart TV', 'Electrodomésticos', 'Herramientas', 'Accesorios', 'Hogar', 'Variados'];
@@ -73,11 +78,29 @@ async function boot() {
     return;
   }
 
+  if (CUENTAS.activa && !CUENTAS.habilitado) {
+    document.querySelector('.content').innerHTML = `<div class="panel"><h3 style="color:var(--red)">Tu usuario no está habilitado</h3>
+      <p style="color:var(--muted)">El panel ya trabaja con tres cuentas (ELDOSTORE, Niko y Ayelen) y tu usuario todavía no fue vinculado.
+      Pedile al administrador (Diego) que te autorice en <strong>Configuración → Usuarios del panel</strong>.</p></div>`;
+    return;
+  }
+  document.body.classList.toggle('modo-cuentas', modoCuentas());
+  mostrarAvisosDeLectura();
+
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => switchView(item.dataset.view));
   });
   populateCategorySelects();
   switchView('dashboard');
+}
+
+/* Avisa si alguna tabla no se pudo leer completa (no debería pasar con la lectura paginada). */
+function mostrarAvisosDeLectura() {
+  const el = document.getElementById('avisoLectura');
+  if (!el) return;
+  el.innerHTML = LECTURA.incompletas.length
+    ? `<div class="notice">Atención: no se pudieron leer todas las filas de ${LECTURA.incompletas.join(', ')}. Los totales de esas secciones pueden estar incompletos. Recargá la página.</div>`
+    : '';
 }
 
 function switchView(view) {
@@ -87,13 +110,13 @@ function switchView(view) {
   const titles = {
     dashboard: 'Dashboard', productos: 'Productos / Inventario', clientes: 'Clientes', pedidos: 'Pedidos',
     ventas: 'Ventas', compras: 'Compras', gastos: 'Gastos', caja: 'Caja', envios: 'Envíos',
-    reportes: 'Reportes', config: 'Configuración'
+    reportes: 'Reportes', config: 'Configuración', cuentas: 'Cuentas'
   };
   document.getElementById('viewTitle').textContent = titles[view] || '';
   const renderers = {
     dashboard: renderDashboard, productos: renderProducts, clientes: renderClients, pedidos: renderOrders,
     ventas: renderSales, compras: renderPurchases, gastos: renderExpenses, caja: renderCash, envios: renderShipments,
-    reportes: renderReportes
+    reportes: renderReportes, cuentas: renderCuentas, config: renderConfig
   };
   if (renderers[view]) renderers[view]();
 }
@@ -105,6 +128,12 @@ function populateCategorySelects() {
   const est = document.getElementById('pedEstadoFilter');
   est.innerHTML = '<option value="">Todos los estados</option>';
   ESTADOS_PEDIDO.forEach(e => { const o = document.createElement('option'); o.value = e; o.textContent = e; est.appendChild(o); });
+  if (modoCuentas()) {
+    document.getElementById('prodOwnerFilter').innerHTML = accountOptions(null, { todas: true });
+    document.getElementById('cajaCuentaFilter').innerHTML = accountOptions(null, { todas: true });
+    document.getElementById('cajaHolderFilter').innerHTML = holderOptions(null, { todos: true });
+    document.getElementById('repCuenta').innerHTML = accountOptions(null, { todas: true });
+  }
 }
 
 /* ------------------------------- MODAL ----------------------------------- */
@@ -129,6 +158,20 @@ function clientOptions(selectedId) {
   return '<option value="">Sin cliente / consumidor final</option>' + DB.clients.map(c =>
     `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.nombre}</option>`).join('');
 }
+function accountOptions(selectedId, { todas = false, vacia = '' } = {}) {
+  return (todas ? '<option value="">Todas las cuentas</option>' : '') + (vacia ? `<option value="">${vacia}</option>` : '') +
+    CUENTAS.accounts.filter(a => a.activo).map(a => `<option value="${a.id}" ${a.id === selectedId ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('');
+}
+function holderOptions(selectedId, { todos = false, vacia = '' } = {}) {
+  return (todos ? '<option value="">Todas las personas</option>' : '') + (vacia ? `<option value="">${vacia}</option>` : '') +
+    CUENTAS.holders.filter(h => h.activo).map(h => `<option value="${h.id}" ${h.id === selectedId ? 'selected' : ''}>${esc(h.nombre)}</option>`).join('');
+}
+function cuentaBadge(accountId) {
+  const a = CUENTAS.accounts.find(x => x.id === accountId);
+  const cls = !a ? '' : a.codigo === 'eldostore' ? 'badge-cta-eldo' : a.codigo === 'niko' ? 'badge-cta-niko' : 'badge-cta-aye';
+  return `<span class="badge badge-cta ${cls}">${esc(a ? a.nombre : '—')}</span>`;
+}
+
 function productOptions(selectedId) {
   return DB.products.map(p =>
     `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${p.codigo} — ${p.nombre} (stock: ${p.stock})</option>`).join('');
@@ -159,9 +202,13 @@ function renderDashboard() {
   document.getElementById('salesChart').innerHTML = d.ventasPorDia.map(x =>
     `<div class="chart-bar" style="height:${Math.max(2, (x.total / max) * 130)}px" title="${fmt(x.total)}"><small>${x.label}</small></div>`).join('');
 
+  const porCuenta = document.getElementById('dashCuentas');
+  if (porCuenta) porCuenta.innerHTML = modoCuentas() ? CUENTAS.accounts.map(a =>
+    `<div class="kpi gold"><span>Saldo ${esc(a.nombre)}</span><strong>${fmt(cashBalance(m => m.accountId === a.id))}</strong></div>`).join('') : '';
+
   const tbody = document.querySelector('#lowStockTable tbody');
   tbody.innerHTML = d.productosBajoStock.length
-    ? d.productosBajoStock.map(p => `<tr><td>${p.codigo}</td><td>${p.nombre}</td><td>${p.stock}</td><td>${p.stockMin}</td></tr>`).join('')
+    ? d.productosBajoStock.map(p => `<tr><td>${esc(p.codigo)}</td><td>${esc(p.nombre)}</td><td>${p.stock}</td><td>${p.stockMin}</td></tr>`).join('')
     : '<tr><td colspan="4" class="empty-state">No hay productos con stock bajo.</td></tr>';
 }
 
@@ -172,13 +219,15 @@ function renderProducts() {
   const categoria = document.getElementById('prodCatFilter').value;
   const soloBajoStock = document.getElementById('prodLowStock').checked;
   const soloSinStock = document.getElementById('prodNoStock').checked;
-  const list = findProducts({ q, categoria, soloBajoStock, soloSinStock });
+  const dueno = modoCuentas() ? document.getElementById('prodOwnerFilter').value : '';
+  const list = findProducts({ q, categoria, soloBajoStock, soloSinStock }).filter(p => !dueno || p.ownerAccountId === dueno);
 
   document.getElementById('prodTableBody').innerHTML = list.length ? list.map(p => `
     <tr>
-      <td>${p.codigo}${p.revisar ? ' <span class="badge badge-warn">revisar</span>' : ''}</td>
-      <td>${p.nombre}</td>
-      <td>${p.categoria || '<em style="color:var(--muted)">sin categoría</em>'}</td>
+      <td>${esc(p.codigo)}${p.revisar ? ' <span class="badge badge-warn">revisar</span>' : ''}</td>
+      <td>${esc(p.nombre)}</td>
+      <td class="solo-cuentas">${modoCuentas() ? cuentaBadge(p.ownerAccountId) : ''}</td>
+      <td>${p.categoria ? esc(p.categoria) : '<em style="color:var(--muted)">sin categoría</em>'}</td>
       <td>${fmt(p.costo)}</td>
       <td>${fmt(p.precio)}</td>
       <td>${fmt(p.gananciaUnit)}</td>
@@ -191,10 +240,10 @@ function renderProducts() {
         <button class="icon-action" onclick="openProductModal('${p.id}')">✎</button>
         <button class="icon-action" onclick="handleDeleteProduct('${p.id}')">🗑</button>
       </td>
-    </tr>`).join('') : '<tr><td colspan="10" class="empty-state">No se encontraron productos.</td></tr>';
+    </tr>`).join('') : '<tr><td colspan="11" class="empty-state">No se encontraron productos.</td></tr>';
 }
 
-['prodSearch', 'prodCatFilter', 'prodLowStock', 'prodNoStock'].forEach(id =>
+['prodSearch', 'prodCatFilter', 'prodLowStock', 'prodNoStock', 'prodOwnerFilter'].forEach(id =>
   document.getElementById(id)?.addEventListener('input', renderProducts));
 
 async function adjustStockPrompt(id, sign) {
@@ -202,9 +251,15 @@ async function adjustStockPrompt(id, sign) {
   const cant = prompt(`${sign > 0 ? 'Ingresar' : 'Descontar'} unidades de "${p.nombre}" (stock actual: ${p.stock}):`, '1');
   if (cant === null) return;
   const n = Number(cant);
-  if (!n || n <= 0) { showToast('Cantidad inválida.'); return; }
+  if (!n || n <= 0 || n !== Math.trunc(n)) { showToast('Cantidad inválida.'); return; }
+  let motivo = '';
+  if (modoCuentas()) {
+    motivo = prompt('Motivo del ajuste (queda registrado):', sign > 0 ? 'Ingreso manual de stock' : 'Unidad dañada / faltante');
+    if (motivo === null) return;
+    if (!motivo.trim()) { showToast('Indicá el motivo del ajuste.'); return; }
+  }
   try {
-    await adjustStock(id, sign * n);
+    await adjustStock(id, sign * n, motivo.trim());
     renderProducts();
     showToast('Stock actualizado.');
   } catch (e) { showError(e); }
@@ -224,7 +279,7 @@ function openProductModal(id) {
   openModal(`
     <h3>${p ? 'Editar producto' : 'Nuevo producto'}</h3>
     <div class="two-col">
-      <div class="field"><label>Código</label><input id="f_codigo" value="${p ? p.codigo : nextSuggestedCode()}"></div>
+      <div class="field"><label>Código</label><input id="f_codigo" value="${p ? esc(p.codigo) : nextSuggestedCode()}"></div>
       <div class="field"><label>Categoría</label>
         <select id="f_categoria">
           <option value="" ${p && !p.categoria ? 'selected' : ''}>Sin categoría</option>
@@ -232,7 +287,10 @@ function openProductModal(id) {
         </select>
       </div>
     </div>
-    <div class="field"><label>Nombre</label><input id="f_nombre" value="${p ? p.nombre : ''}"></div>
+    <div class="field"><label>Nombre</label><input id="f_nombre" value="${p ? esc(p.nombre) : ''}"></div>
+    ${modoCuentas() ? `<div class="field"><label>Dueño del producto (cuenta)</label>
+      <select id="f_owner">${accountOptions(p ? p.ownerAccountId : cuentaEldostoreId())}</select>
+      ${p ? '<small>Las ventas anteriores conservan su dueño. El cambio queda registrado con el stock y su valor.</small>' : ''}</div>` : ''}
     
         <div class="field">
           <label>Foto del producto</label>
@@ -265,6 +323,18 @@ async function saveProduct(id) {
     stock: document.getElementById('f_stock').value,
     stockMin: document.getElementById('f_stockMin').value
   };
+  const ownerSel = document.getElementById('f_owner');
+  let motivoDueno = '';
+  if (ownerSel) {
+    data.ownerAccountId = ownerSel.value;
+    const actual = id ? DB.products.find(x => x.id === id) : null;
+    if (actual && actual.ownerAccountId !== data.ownerAccountId) {
+      motivoDueno = prompt(`Cambiar el dueño de "${actual.nombre}" a ${accountName(data.ownerAccountId)}.\n` +
+        `Stock actual: ${actual.stock} u. (valor a costo ${fmt(actual.valorStock)}).\nMotivo del cambio:`);
+      if (motivoDueno === null) return;
+      if (!motivoDueno.trim()) { showToast('Indicá el motivo del cambio de dueño.'); return; }
+    }
+  }
    
   const archivoFoto = document.getElementById('f_foto').files[0];
   if (archivoFoto) {
@@ -302,7 +372,10 @@ async function saveProduct(id) {
       data.foto = fotoPublica.publicUrl;
     }
 
-    if (id) await updateProduct(id, data); else await addProduct(data);
+    if (id) {
+      await updateProduct(id, data);
+      if (motivoDueno) await setProductOwner(id, data.ownerAccountId, motivoDueno.trim());
+    } else await addProduct(data);
     closeModal();
     renderProducts();
     showToast('Producto guardado.');
@@ -420,7 +493,7 @@ function renderOrders() {
     const cli = DB.clients.find(c => c.id === o.clienteId);
     return `<tr>
       <td>${fmtDate(o.fecha)}</td>
-      <td>${cli ? cli.nombre : 'Consumidor final'}</td>
+      <td>${cli ? esc(cli.nombre) : 'Consumidor final'}</td>
       <td>${fmt(o.total)}</td><td>${fmt(o.sena)}</td><td>${fmt(o.saldo)}</td>
       <td><span class="badge ${estadoBadgeClass(o.estado)}">${o.estado}</span></td>
       <td class="row-actions">
@@ -446,9 +519,32 @@ async function handleOrderStatusChange(id, estado) {
 }
 
 async function handleConvertOrder(id) {
+  if (modoCuentas()) {
+    const o = DB.orders.find(x => x.id === id);
+    openModal(`
+      <h3>Convertir pedido en venta</h3>
+      <p style="color:var(--muted);font-size:.88rem;margin-bottom:12px">Se descuenta el stock y se registra una venta propia por ${fmt(o ? o.total : 0)}.
+        Cada producto se asigna a la cuenta de su dueño.</p>
+      <div class="field"><label>¿Quién cobró? *</label><select id="cv_holder">${holderOptions(CUENTAS.miHolderId)}</select></div>
+      <div class="modal-actions">
+        <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary btn-sm" id="cvBtn" onclick="confirmConvertOrder('${id}')">Convertir</button>
+      </div>`);
+    return;
+  }
   if (!confirm('Esto va a descontar el stock y generar una VENTA PROPIA (sin comisión). ¿Confirmar?')) return;
   const r = await convertOrderToSale(id);
   if (r.error) { showError(r.error); return; }
+  showToast('Pedido convertido en venta.');
+  renderOrders();
+}
+
+async function confirmConvertOrder(id) {
+  const btn = document.getElementById('cvBtn');
+  btn.disabled = true; btn.textContent = 'Convirtiendo...';
+  const r = await convertOrderToSale(id, null, document.getElementById('cv_holder').value);
+  if (r.error) { showError(r.error); btn.disabled = false; btn.textContent = 'Convertir'; return; }
+  closeModal();
   showToast('Pedido convertido en venta.');
   renderOrders();
 }
@@ -498,7 +594,7 @@ function addOrderDraftItem() {
 function renderOrderDraftItems() {
   const el = document.getElementById('o_itemsList');
   el.innerHTML = orderDraftItems.length
-    ? orderDraftItems.map((it, i) => `<div>${it.nombre} × ${it.cantidad} — ${fmt(it.precio * it.cantidad)}
+    ? orderDraftItems.map((it, i) => `<div>${esc(it.nombre)} × ${it.cantidad} — ${fmt(it.precio * it.cantidad)}
         <button class="icon-action" onclick="removeOrderDraftItem(${i})">✕</button></div>`).join('')
     : '<em style="color:var(--muted)">Sin ítems todavía.</em>';
   const total = orderDraftItems.reduce((a, it) => a + it.cantidad * it.precio, 0);
@@ -570,7 +666,10 @@ function renderSales() {
   document.getElementById('ventaTableBody').innerHTML = list.length ? list.map(v => {
     const cli = DB.clients.find(c => c.id === v.clienteId);
     const productos = v.items.map(i => `${esc(i.nombre)} ×${i.cantidad}` +
-      (v.modalidad === 'revendedor' && i.comisionPct !== undefined ? ` <small style="color:var(--muted)">(${i.comisionPct}%)</small>` : '')).join(', ');
+      (v.modalidad === 'revendedor' && i.comisionPct !== undefined ? ` <small style="color:var(--muted)">(${i.comisionPct}%)</small>` : '') +
+      (modoCuentas() ? ' ' + cuentaBadge(cuentaDeLinea(i)) : '')).join(', ') +
+      (modoCuentas() ? `<div class="sub-info">Cobró: ${esc(holderName(v.holderId))}${v.creadoPor ? ' · cargó ' + esc(userName(v.creadoPor)) : ''}` +
+        `${v.anulada && v.anuladoPor ? ' · anuló ' + esc(userName(v.anuladoPor)) : ''}</div>` : '');
     const marcas = (v.anulada ? ` <span class="badge badge-anulada" title="${esc(v.motivoAnulacion)}">ANULADA</span>` : '') +
       (v.corrigeA ? ' <span class="badge badge-pend" title="Reemplaza a una venta anulada por corrección">corrección</span>' : '');
     const acciones = v.anulada
@@ -609,13 +708,22 @@ function costoParaLinea(productoId) {
   return p ? p.costo : 0;
 }
 
+/* Dueño a usar en una línea: en una corrección se conserva el de la venta original. */
+function duenoParaLinea(productoId) {
+  const original = saleEditingId ? DB.sales.find(v => v.id === saleEditingId) : null;
+  const linea = original && original.items.find(i => i.productoId === productoId);
+  if (linea) return cuentaDeLinea(linea);
+  const p = DB.products.find(x => x.id === productoId);
+  return p ? p.ownerAccountId : null;
+}
+
 function openSaleModal(editId) {
   const original = editId ? DB.sales.find(v => v.id === editId) : null;
   saleEditingId = original ? original.id : null;
   saleDraftModalidad = original ? original.modalidad : '';
   saleDraftItems = original ? original.items.map(i => ({
     productoId: i.productoId, nombre: i.nombre, cantidad: Number(i.cantidad), precioVenta: Number(i.precioVenta),
-    costoUnit: costoParaLinea(i.productoId),
+    costoUnit: costoParaLinea(i.productoId), ownerAccountId: duenoParaLinea(i.productoId),
     comisionPct: i.comisionPct !== undefined && original.modalidad === 'revendedor' ? Number(i.comisionPct) : ''
   })) : [];
 
@@ -631,6 +739,8 @@ function openSaleModal(editId) {
       </div>
     </div>
     <div class="field"><label>Cliente</label><select id="v_cliente">${clientOptions(original ? original.clienteId : null)}</select></div>
+    ${modoCuentas() ? `<div class="field"><label>¿Quién cobró? *</label><select id="v_holder">${holderOptions(original ? original.holderId : CUENTAS.miHolderId)}</select>
+      <small>Cada producto se asigna a la cuenta de su dueño, aunque cobre otra persona.</small></div>` : ''}
     <div class="panel" style="padding:14px">
       <div class="two-col">
         <div class="field" style="margin-bottom:8px"><label>Producto</label><select id="v_producto">${productOptions()}</select></div>
@@ -664,7 +774,8 @@ function addSaleDraftItem() {
   const enBorrador = saleDraftItems.filter(x => x.productoId === productoId).reduce((a, x) => a + x.cantidad, 0);
   const disponible = p.stock + unidadesEnVentaOriginal(productoId) - enBorrador;
   if (cantidad > disponible) { showToast(`Stock insuficiente de "${p.nombre}" (disponible: ${disponible}).`); return; }
-  saleDraftItems.push({ productoId, cantidad, precioVenta: p.precio, nombre: p.nombre, costoUnit: costoParaLinea(productoId), comisionPct: '' });
+  saleDraftItems.push({ productoId, cantidad, precioVenta: p.precio, nombre: p.nombre, costoUnit: costoParaLinea(productoId), comisionPct: '',
+                       ownerAccountId: duenoParaLinea(productoId) });
   renderSaleDraftItems();
 }
 
@@ -674,12 +785,13 @@ function renderSaleDraftItems() {
   const rev = saleDraftModalidad === 'revendedor';
   el.innerHTML = saleDraftItems.length ? `
     <div class="table-wrap"><table class="draft-table">
-      <thead><tr><th>Producto</th><th>Cant.</th><th>Precio u.</th><th>Importe</th><th>Costo</th>
+      <thead><tr><th>Producto</th>${modoCuentas() ? '<th>Cuenta</th>' : ''}<th>Cant.</th><th>Precio u.</th><th>Importe</th><th>Costo</th>
         ${rev ? '<th>% revendedor</th><th>Comisión</th>' : ''}<th>Ganancia</th><th></th></tr></thead>
       <tbody>${saleDraftItems.map((it, i) => {
         const l = calcSaleLine(it, saleDraftModalidad);
         return `<tr>
           <td class="prod">${esc(it.nombre)}</td>
+          ${modoCuentas() ? `<td data-label="Cuenta">${cuentaBadge(it.ownerAccountId)}</td>` : ''}
           <td data-label="Cantidad">${it.cantidad}</td><td data-label="Precio u.">${fmt(it.precioVenta)}</td>
           <td data-label="Importe">${fmt(l.subtotal)}</td><td data-label="Costo">${fmt(l.costoTotal)}</td>
           ${rev ? `<td data-label="% revendedor"><input type="number" inputmode="decimal" min="0" max="100" step="0.1" placeholder="%" value="${it.comisionPct}" oninput="setSaleItemPct(${i}, this.value)"></td>
@@ -711,7 +823,13 @@ function renderSaleSummary() {
     <div><span>Importe de venta</span><strong>${fmt(t.total)}</strong></div>
     <div><span>Costo total</span><strong>${fmt(t.costoTotal)}</strong></div>
     <div><span>Comisión revendedor</span><strong style="color:var(--red)">${rev ? fmt(t.comision) : '—'}</strong></div>
-    <div><span>Ganancia bruta ELDOSTORE</span><strong style="color:var(--gold)">${fmt(t.ganancia)}</strong></div>`;
+    <div><span>${modoCuentas() ? 'Ganancia bruta total' : 'Ganancia bruta ELDOSTORE'}</span><strong style="color:var(--gold)">${fmt(t.ganancia)}</strong></div>` +
+    (modoCuentas() && saleDraftItems.length ? CUENTAS.accounts.map(a => {
+      const lineas = saleDraftItems.filter(it => it.ownerAccountId === a.id);
+      if (!lineas.length) return '';
+      const ta = calcSaleTotals(lineas, saleDraftModalidad);
+      return `<div><span>${esc(a.nombre)}: ventas ${fmt(ta.total)}</span><strong>ganancia ${fmt(ta.ganancia)}</strong></div>`;
+    }).join('') : '');
 }
 
 function removeSaleDraftItem(i) { saleDraftItems.splice(i, 1); renderSaleDraftItems(); }
@@ -727,8 +845,10 @@ async function saveSale() {
     clienteId: document.getElementById('v_cliente').value || null,
     items: saleDraftItems,
     metodoPago: document.getElementById('v_metodoPago').value,
-    modalidad: saleDraftModalidad
+    modalidad: saleDraftModalidad,
+    holderId: document.getElementById('v_holder') ? document.getElementById('v_holder').value : null
   };
+  if (modoCuentas() && !datos.holderId) { showToast('Indicá quién cobró.'); return; }
   let motivo = '';
   if (saleEditingId) {
     motivo = document.getElementById('v_motivo').value.trim();
@@ -785,7 +905,7 @@ function renderPurchases() {
       : `<button class="icon-action" onclick="openPurchaseModal('${c.id}')">✎ Corregir</button>
          <button class="icon-action" onclick="handleVoidPurchase('${c.id}')">⊘ Anular</button>`;
     return `<tr class="${c.anulada ? 'row-anulada' : ''}"><td>${fmtDate(c.fecha)}</td><td>${esc(c.proveedor) || '—'}</td>
-      <td class="no-strike">${p ? esc(p.nombre) : '—'}${marcas}</td>
+      <td class="no-strike">${p ? esc(p.nombre) : '—'}${marcas}${modoCuentas() ? `<div class="sub-info">Cuenta: ${esc(accountName(c.accountId))} · pagó ${esc(holderName(c.holderId))}</div>` : ''}</td>
       <td>${c.cantidad}</td><td>${fmt(c.costoUnit)}</td><td>${fmt(c.total)}</td>
       <td class="row-actions no-strike">${acciones}</td></tr>`;
   }).join('') : '<tr><td colspan="7" class="empty-state">No hay compras para mostrar.</td></tr>';
@@ -801,7 +921,9 @@ function openPurchaseModal(editId) {
     ${c ? `<div class="notice">Compra original: ${fmtDate(c.fecha)} · ${c.cantidad} u. · ${fmt(c.total)}.<br>
       Al guardar, la original queda <strong>anulada</strong> (se resta su stock y se revierte su pago) y se registra esta versión.</div>` : ''}
     <div class="field"><label>Proveedor</label><input id="cp_proveedor" value="${c ? esc(c.proveedor) : ''}"></div>
-    <div class="field"><label>Producto</label><select id="cp_producto">${productOptions(c ? c.productoId : null)}</select></div>
+    <div class="field"><label>Producto</label><select id="cp_producto">${productOptions(c ? c.productoId : null)}</select>
+      ${modoCuentas() ? '<small>La compra se registra en la cuenta del dueño del producto.</small>' : ''}</div>
+    ${modoCuentas() ? `<div class="field"><label>¿Quién pagó? *</label><select id="cp_holder">${holderOptions(c ? c.holderId : CUENTAS.miHolderId)}</select></div>` : ''}
     <div class="two-col">
       <div class="field"><label>Cantidad</label><input type="number" id="cp_cantidad" value="${c ? c.cantidad : 1}" min="1"></div>
       <div class="field"><label>Costo unitario</label><input type="number" id="cp_costoUnit" value="${c ? c.costoUnit : ''}"></div>
@@ -825,7 +947,8 @@ async function savePurchase() {
     cantidad: document.getElementById('cp_cantidad').value,
     costoUnit: document.getElementById('cp_costoUnit').value,
     metodoPago: document.getElementById('cp_metodoPago').value,
-    notas: document.getElementById('cp_notas').value
+    notas: document.getElementById('cp_notas').value,
+    holderId: document.getElementById('cp_holder') ? document.getElementById('cp_holder').value : null
   };
   let motivo = '';
   if (purchaseEditingId) {
@@ -878,7 +1001,7 @@ function renderExpenses() {
       : `<button class="icon-action" onclick="openExpenseModal('${g.id}')">✎ Corregir</button>
          <button class="icon-action" onclick="handleVoidExpense('${g.id}')">⊘ Anular</button>`;
     return `<tr class="${g.anulada ? 'row-anulada' : ''}"><td>${fmtDate(g.fecha)}</td>
-      <td class="no-strike">${esc(g.descripcion)}${marcas}</td><td>${esc(g.categoria)}</td><td>${fmt(g.importe)}</td>
+      <td class="no-strike">${esc(g.descripcion)}${marcas}${modoCuentas() ? `<div class="sub-info">${partesDeGasto(g.id).map(x => esc(accountName(x.accountId)) + ' ' + fmt(x.importe)).join(' · ')} · pagó ${esc(holderName(g.holderId))}</div>` : ''}</td><td>${esc(g.categoria)}</td><td>${fmt(g.importe)}</td>
       <td>${esc(g.metodoPago) || '—'}</td><td class="row-actions no-strike">${acciones}</td></tr>`;
   }).join('') : '<tr><td colspan="6" class="empty-state">No hay gastos para mostrar.</td></tr>';
 }
@@ -894,8 +1017,23 @@ function openExpenseModal(editId) {
     <div class="field"><label>Descripción</label><input id="g_descripcion" value="${g ? esc(g.descripcion) : ''}"></div>
     <div class="two-col">
       <div class="field"><label>Categoría</label><input id="g_categoria" placeholder="Alquiler, insumos, etc." value="${g ? esc(g.categoria) : ''}"></div>
-      <div class="field"><label>Importe</label><input type="number" id="g_importe" value="${g ? g.importe : ''}"></div>
+      <div class="field"><label>Importe</label><input type="number" id="g_importe" value="${g ? g.importe : ''}" oninput="actualizarRepartoGasto()"></div>
     </div>
+    ${modoCuentas() ? `
+    <div class="field"><label>¿Quién pagó? *</label><select id="g_holder">${holderOptions(g ? g.holderId : CUENTAS.miHolderId)}</select></div>
+    <div class="panel" style="padding:14px">
+      <label style="display:block;font-weight:700;margin-bottom:8px">Reparto entre cuentas *</label>
+      ${CUENTAS.accounts.filter(a => a.activo).map(a => {
+        const parte = g ? partesDeGasto(g.id).find(x => x.accountId === a.id) : null;
+        return `<div class="two-col reparto-fila"><div>${esc(a.nombre)}</div>
+          <input type="number" min="0" step="0.01" class="g_parte" data-account="${a.id}" value="${parte ? parte.importe : ''}" oninput="actualizarRepartoGasto()"></div>`;
+      }).join('')}
+      <div class="toolbar" style="margin:8px 0 0">
+        <button class="btn btn-sm" type="button" onclick="repartoGasto('eldostore')">Todo a ELDOSTORE</button>
+        <button class="btn btn-sm" type="button" onclick="repartoGasto('iguales')">Partes iguales</button>
+      </div>
+      <p id="g_repartoEstado" style="font-size:.85rem;margin-top:8px"></p>
+    </div>` : ''}
     <div class="field"><label>Método de pago</label><input id="g_metodoPago" value="${g ? esc(g.metodoPago) : ''}"></div>
     <div class="field"><label>Notas</label><textarea id="g_notas">${g ? esc(g.notas) : ''}</textarea></div>
     ${g ? `<div class="field"><label>Motivo de la corrección *</label><input id="g_motivo"></div>` : ''}
@@ -904,6 +1042,33 @@ function openExpenseModal(editId) {
       <button class="btn btn-primary btn-sm" id="saveExpenseBtn" onclick="saveExpense()">${g ? 'Guardar corrección' : 'Guardar'}</button>
     </div>
   `);
+  if (modoCuentas() && !g) repartoGasto('eldostore'); else actualizarRepartoGasto();
+}
+
+function leerPartesGasto() {
+  return [...document.querySelectorAll('.g_parte')]
+    .map(el => ({ accountId: el.dataset.account, importe: Number(el.value) || 0 }))
+    .filter(x => x.importe > 0);
+}
+function actualizarRepartoGasto() {
+  const el = document.getElementById('g_repartoEstado');
+  if (!el) return;
+  const total = Number(document.getElementById('g_importe').value) || 0;
+  const suma = round2(leerPartesGasto().reduce((a, x) => a + x.importe, 0));
+  const ok = total > 0 && suma === round2(total);
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+  el.textContent = ok ? `Reparto completo: ${fmt(suma)}.` : `Las partes suman ${fmt(suma)} y el gasto es de ${fmt(total)}: tienen que coincidir.`;
+}
+function repartoGasto(modo) {
+  const total = Number(document.getElementById('g_importe').value) || 0;
+  const campos = [...document.querySelectorAll('.g_parte')];
+  if (modo === 'eldostore') {
+    campos.forEach(el => { el.value = el.dataset.account === cuentaEldostoreId() ? total : ''; });
+  } else {
+    const base = Math.floor((total / campos.length) * 100) / 100;
+    campos.forEach((el, i) => { el.value = i === 0 ? round2(total - base * (campos.length - 1)) : base; });
+  }
+  actualizarRepartoGasto();
 }
 
 async function saveExpense() {
@@ -916,6 +1081,15 @@ async function saveExpense() {
     metodoPago: document.getElementById('g_metodoPago').value,
     notas: document.getElementById('g_notas').value
   };
+  if (modoCuentas()) {
+    datos.holderId = document.getElementById('g_holder').value;
+    datos.partes = leerPartesGasto();
+    if (!(Number(datos.importe) > 0)) { showToast('Importe inválido.'); return; }
+    if (!datos.holderId) { showToast('Indicá quién pagó.'); return; }
+    if (!datos.partes.length) { showToast('Indicá a qué cuenta corresponde el gasto.'); return; }
+    const suma = round2(datos.partes.reduce((a, x) => a + x.importe, 0));
+    if (suma !== round2(Number(datos.importe))) { showToast(`Las partes suman ${fmt(suma)} y el gasto es de ${fmt(datos.importe)}: tienen que coincidir.`); return; }
+  }
   let motivo = '';
   if (expenseEditingId) {
     motivo = document.getElementById('g_motivo').value.trim();
@@ -954,19 +1128,26 @@ async function handleVoidExpense(id) {
 /* ==================================== CAJA ======================================= */
 
 function renderCash() {
-  const ingresos = round2(DB.cashMovements.filter(m => m.tipo === 'ingreso').reduce((a, m) => a + m.monto, 0));
-  const egresos = round2(DB.cashMovements.filter(m => m.tipo === 'egreso').reduce((a, m) => a + m.monto, 0));
+  const cuenta = modoCuentas() ? document.getElementById('cajaCuentaFilter').value : '';
+  const persona = modoCuentas() ? document.getElementById('cajaHolderFilter').value : '';
+  const filtro = m => (!cuenta || m.accountId === cuenta) && (!persona || m.holderId === persona);
+  const list = DB.cashMovements.filter(filtro);
+  const ingresos = round2(list.filter(m => m.tipo === 'ingreso').reduce((a, m) => a + m.monto, 0));
+  const egresos = round2(list.filter(m => m.tipo === 'egreso').reduce((a, m) => a + m.monto, 0));
   document.getElementById('cajaIngresos').textContent = fmt(ingresos);
   document.getElementById('cajaEgresos').textContent = fmt(egresos);
-  document.getElementById('cajaSaldo').textContent = fmt(cashBalance());
+  document.getElementById('cajaSaldo').textContent = fmt(cashBalance(filtro));
 
-  const list = DB.cashMovements;
   document.getElementById('cajaTableBody').innerHTML = list.length ? list.map(m =>
     `<tr><td>${fmtDate(m.fecha)}</td>
-      <td><span class="badge ${m.tipo === 'ingreso' ? 'badge-ok' : 'badge-warn'}">${m.tipo}</span></td>
-      <td>${m.origen}</td><td>${m.descripcion}</td><td>${fmt(m.monto)}</td></tr>`
-  ).join('') : '<tr><td colspan="5" class="empty-state">Sin movimientos de caja todavía.</td></tr>';
+      <td><span class="badge ${m.tipo === 'ingreso' ? 'badge-ok' : 'badge-warn'}">${esc(m.tipo)}</span></td>
+      <td>${esc(m.origen)}${m.anulaA ? ' <span class="badge badge-pend">anulación</span>' : ''}</td>
+      <td class="solo-cuentas">${modoCuentas() ? cuentaBadge(m.accountId) : ''}</td>
+      <td class="solo-cuentas">${modoCuentas() ? esc(holderName(m.holderId)) : ''}</td>
+      <td>${esc(m.descripcion)}</td><td>${fmt(m.monto)}</td></tr>`
+  ).join('') : '<tr><td colspan="7" class="empty-state">Sin movimientos de caja todavía.</td></tr>';
 }
+['cajaCuentaFilter', 'cajaHolderFilter'].forEach(id => document.getElementById(id)?.addEventListener('input', renderCash));
 
 function openCashModal(tipo) {
   openModal(`
@@ -1067,13 +1248,26 @@ function renderReportes() {
     return true;
   };
   // Las operaciones anuladas no cuentan en los reportes.
-  const ventas = activeSales().filter(v => inRange(v.fecha));
-  const compras = activePurchases().filter(c => inRange(c.fecha));
+  const cuenta = modoCuentas() ? document.getElementById('repCuenta').value : '';
+  let ventas = activeSales().filter(v => inRange(v.fecha));
+  let compras = activePurchases().filter(c => inRange(c.fecha));
   const gastos = activeExpenses().filter(g => inRange(g.fecha));
 
+  // Con una cuenta elegida: cada venta cuenta solo con la parte de esa cuenta.
+  if (cuenta) {
+    ventas = ventas.map(v => {
+      const a = allocationsDeVenta(v.id).find(x => x.accountId === cuenta);
+      if (!a) return null;
+      return { ...v, total: a.total, costoTotal: a.costo, comisionTotal: a.comision, ganancia: a.ganancia,
+               items: v.items.filter(i => cuentaDeLinea(i) === cuenta) };
+    }).filter(Boolean);
+    compras = compras.filter(c => c.accountId === cuenta);
+  }
   const r = salesSummary(ventas);
   const totalCompras = round2(compras.reduce((a, c) => a + c.total, 0));
-  const totalGastos = round2(gastos.reduce((a, g) => a + g.importe, 0));
+  const totalGastos = round2(cuenta
+    ? gastos.reduce((a, g) => a + partesDeGasto(g.id).filter(x => x.accountId === cuenta).reduce((b, x) => b + x.importe, 0), 0)
+    : gastos.reduce((a, g) => a + g.importe, 0));
 
   document.getElementById('repKpis').innerHTML = [
     kpiBox('Ventas totales', fmt(r.todas.total), `${r.todas.cantidad} ventas`, 'green'),
@@ -1082,7 +1276,8 @@ function renderReportes() {
     kpiBox('Comisiones de revendedores', fmt(r.todas.comision), '', r.todas.comision > 0 ? 'red' : ''),
     kpiBox('Ganancia bruta', fmt(r.todas.ganancia), 'después de comisiones, antes de gastos', 'gold'),
     kpiBox('Compras', fmt(totalCompras), '', ''),
-    kpiBox('Gastos', fmt(totalGastos), '', 'red')
+    kpiBox('Gastos', fmt(totalGastos), cuenta ? 'parte de esta cuenta' : '', 'red'),
+    kpiBox('Ganancia neta', fmt(round2(r.todas.ganancia - totalGastos)), 'ganancia bruta − gastos', 'gold')
   ].join('');
 
   document.getElementById('repModalidades').innerHTML = [['Venta propia', r.propia], ['Venta por revendedor', r.revendedor], ['Total', r.todas]]
@@ -1150,4 +1345,181 @@ async function handleChangePassword() {
   msgEl.style.color = r.ok ? 'var(--green)' : 'var(--red)';
   msgEl.textContent = r.ok ? 'Contraseña actualizada.' : r.error;
   if (r.ok) document.getElementById('passNueva').value = '';
+}
+
+/* ================================ CUENTAS (003) ================================== */
+/* Solo se usa cuando la migración de tres cuentas está aplicada. */
+
+async function renderCuentas() {
+  if (!modoCuentas()) return;
+  const desde = document.getElementById('ctaDesde').value;
+  const hasta = document.getElementById('ctaHasta').value;
+  const cont = document.getElementById('ctaResumen');
+  cont.innerHTML = '<p style="color:var(--muted)">Calculando...</p>';
+  try {
+    const [resumen, posiciones] = await Promise.all([resumenCuentas(desde, hasta), posicionesCaja()]);
+    const orden = id => CUENTAS.accounts.findIndex(a => a.id === id);
+    resumen.sort((x, y) => orden(x.account_id) - orden(y.account_id));
+    cont.innerHTML = resumen.map(r => `
+      <div class="panel cuenta-card">
+        <h3>${cuentaBadge(r.account_id)}</h3>
+        <div class="cuenta-filas">
+          <div><span>Ventas (${Number(r.ventas_cantidad)})</span><strong>${fmt(Number(r.ventas))}</strong></div>
+          <div><span>Costo de lo vendido</span><strong>${fmt(Number(r.costo))}</strong></div>
+          <div><span>Comisiones</span><strong>${fmt(Number(r.comisiones))}</strong></div>
+          <div><span>Ganancia bruta</span><strong>${fmt(Number(r.ganancia_bruta))}</strong></div>
+          <div><span>Gastos (su parte)</span><strong>${fmt(Number(r.gastos))}</strong></div>
+          <div class="destacado"><span>Ganancia neta</span><strong>${fmt(Number(r.ganancia_neta))}</strong></div>
+          <div><span>Compras de mercadería</span><strong>${fmt(Number(r.compras))}</strong></div>
+          <div><span>Retiros / aportes</span><strong>${fmt(Number(r.retiros))} / ${fmt(Number(r.aportes))}</strong></div>
+          <div><span>Repartos recibidos / enviados</span><strong>${fmt(Number(r.repartos_recibidos))} / ${fmt(Number(r.repartos_enviados))}</strong></div>
+          <div class="destacado"><span>Saldo de caja (total)</span><strong>${fmt(Number(r.saldo_caja))}</strong></div>
+        </div>
+      </div>`).join('');
+
+    // Matriz: de qué cuenta es el dinero (filas) y quién lo tiene (columnas)
+    const holders = CUENTAS.holders.filter(h => h.activo);
+    const saldo = (a, h) => Number((posiciones.find(p => p.account_id === a && p.holder_id === h) || {}).saldo || 0);
+    document.getElementById('ctaPosiciones').innerHTML = `
+      <thead><tr><th>Cuenta \\ Tiene el dinero</th>${holders.map(h => `<th>${esc(h.nombre)}</th>`).join('')}<th>Total</th></tr></thead>
+      <tbody>${CUENTAS.accounts.map(a => `<tr><td>${esc(a.nombre)}</td>
+        ${holders.map(h => `<td>${fmt(saldo(a.id, h.id))}</td>`).join('')}
+        <td><strong>${fmt(round2(holders.reduce((s, h) => s + saldo(a.id, h.id), 0)))}</strong></td></tr>`).join('')}
+        <tr><td><strong>Total</strong></td>${holders.map(h => `<td><strong>${fmt(round2(CUENTAS.accounts.reduce((s, a) => s + saldo(a.id, h.id), 0)))}</strong></td>`).join('')}
+        <td><strong>${fmt(round2(posiciones.reduce((s, p) => s + Number(p.saldo), 0)))}</strong></td></tr></tbody>`;
+  } catch (e) {
+    cont.innerHTML = '';
+    showError(e);
+  }
+  renderTransfers();
+}
+
+function lado(accountId, holderId) {
+  return accountId || holderId ? `${esc(accountName(accountId))} · ${esc(holderName(holderId))}` : '—';
+}
+
+function renderTransfers() {
+  const verAnuladas = document.getElementById('ctaVerAnulados').checked;
+  const list = DB.transfers.filter(t => verAnuladas || !t.anulada);
+  document.getElementById('ctaTransfers').innerHTML = list.length ? list.map(t => `
+    <tr class="${t.anulada ? 'row-anulada' : ''}"><td>${fmtDate(t.fecha)}</td>
+      <td class="no-strike">${esc(TIPOS_MOVIMIENTO[t.tipo] || t.tipo)}${t.anulada ? ` <span class="badge badge-anulada" title="${esc(t.motivoAnulacion)}">ANULADO</span>` : ''}</td>
+      <td>${lado(t.fromAccountId, t.fromHolderId)}</td><td>${lado(t.toAccountId, t.toHolderId)}</td>
+      <td>${fmt(t.monto)}</td>
+      <td>${esc(t.motivo)}<div class="sub-info">cargó ${esc(userName(t.creadoPor))}${t.anulada ? ' · anuló ' + esc(userName(t.anuladoPor)) + ': ' + esc(t.motivoAnulacion) : ''}</div></td>
+      <td class="row-actions no-strike">${t.anulada ? '' : `<button class="btn btn-sm btn-danger" onclick="handleVoidTransfer('${t.id}')">Anular</button>`}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="empty-state">Sin movimientos entre cuentas.</td></tr>';
+}
+document.getElementById('ctaVerAnulados')?.addEventListener('change', renderTransfers);
+
+/* Qué lados usa cada tipo de movimiento (igual a las reglas de la base). */
+const LADOS_MOVIMIENTO = {
+  liquidacion: { desde: true, hacia: true, ayuda: 'Una persona le entrega a otra dinero de una misma cuenta. La cuenta no cambia; cambia quién lo tiene.' },
+  reparto: { desde: true, hacia: true, ayuda: 'Pasa dinero de una cuenta a otra (reparto extraordinario). No es una venta ni un gasto.' },
+  retiro: { desde: true, hacia: false, ayuda: 'Sale dinero de una cuenta (retiro personal).' },
+  aporte: { desde: false, hacia: true, ayuda: 'Entra dinero a una cuenta (aporte de capital).' },
+  apertura: { desde: false, hacia: true, ayuda: 'Saldo inicial de una cuenta. Usar una sola vez al empezar.' }
+};
+
+function openTransferModal() {
+  openModal(`
+    <h3>Movimiento entre cuentas</h3>
+    <div class="field"><label>Tipo</label><select id="tr_tipo" onchange="actualizarLadosTransfer()">
+      ${Object.entries(TIPOS_MOVIMIENTO).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
+      <small id="tr_ayuda"></small></div>
+    <div class="two-col" id="tr_desde">
+      <div class="field"><label>Sale de la cuenta</label><select id="tr_fromAccount">${accountOptions(cuentaEldostoreId())}</select></div>
+      <div class="field"><label>Lo entrega</label><select id="tr_fromHolder">${holderOptions(CUENTAS.miHolderId)}</select></div>
+    </div>
+    <div class="two-col" id="tr_hacia">
+      <div class="field"><label>Entra a la cuenta</label><select id="tr_toAccount">${accountOptions(cuentaEldostoreId())}</select></div>
+      <div class="field"><label>Lo recibe</label><select id="tr_toHolder">${holderOptions(CUENTAS.miHolderId)}</select></div>
+    </div>
+    <div class="field"><label>Monto</label><input type="number" min="0" step="0.01" id="tr_monto"></div>
+    <div class="field"><label>Motivo *</label><input id="tr_motivo"></div>
+    <div class="modal-actions">
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="saveTransferBtn" onclick="saveTransfer()">Registrar</button>
+    </div>`);
+  actualizarLadosTransfer();
+}
+
+function actualizarLadosTransfer() {
+  const l = LADOS_MOVIMIENTO[document.getElementById('tr_tipo').value];
+  document.getElementById('tr_desde').style.display = l.desde ? '' : 'none';
+  document.getElementById('tr_hacia').style.display = l.hacia ? '' : 'none';
+  document.getElementById('tr_ayuda').textContent = l.ayuda;
+}
+
+async function saveTransfer() {
+  const tipo = document.getElementById('tr_tipo').value;
+  const l = LADOS_MOVIMIENTO[tipo];
+  const v = id => document.getElementById(id).value;
+  const datos = {
+    tipo, monto: Number(v('tr_monto')), motivo: v('tr_motivo').trim(),
+    fromAccountId: l.desde ? v('tr_fromAccount') : null, fromHolderId: l.desde ? v('tr_fromHolder') : null,
+    toAccountId: l.hacia ? v('tr_toAccount') : null, toHolderId: l.hacia ? v('tr_toHolder') : null
+  };
+  if (!(datos.monto > 0)) { showToast('Ingresá un monto válido.'); return; }
+  if (!datos.motivo) { showToast('Indicá el motivo.'); return; }
+  if (tipo === 'liquidacion' && (datos.fromAccountId !== datos.toAccountId || datos.fromHolderId === datos.toHolderId)) {
+    showToast('En una liquidación la cuenta es la misma y cambian las personas.'); return;
+  }
+  if (tipo === 'reparto' && datos.fromAccountId === datos.toAccountId) { showToast('Un reparto va de una cuenta a otra distinta.'); return; }
+  const btn = document.getElementById('saveTransferBtn');
+  btn.disabled = true; btn.textContent = 'Registrando...';
+  try {
+    await registerTransfer(datos);
+    closeModal();
+    showToast('Movimiento registrado.');
+    if (document.getElementById('view-cuentas').classList.contains('active')) renderCuentas(); else renderCash();
+  } catch (e) { showError(e); btn.disabled = false; btn.textContent = 'Registrar'; }
+}
+
+async function handleVoidTransfer(id) {
+  const motivo = prompt('Motivo de la anulación (queda registrado):');
+  if (motivo === null) return;
+  if (!motivo.trim()) { showToast('Indicá el motivo.'); return; }
+  try {
+    await voidTransfer(id, motivo.trim());
+    showToast('Movimiento anulado.');
+    renderCuentas();
+  } catch (e) { showError(e); }
+}
+
+/* ===================== CONFIGURACIÓN: usuarios del panel (003) ===================== */
+
+function renderConfig() {
+  const el = document.getElementById('cfgUsuarios');
+  if (!el || !modoCuentas()) return;
+  el.innerHTML = CUENTAS.users.length ? CUENTAS.users.map(u => `
+    <tr><td>${esc(u.nombre) || '—'}${u.user_id === CUENTAS.miUserId ? ' <span class="badge badge-ok">vos</span>' : ''}</td>
+      <td>${esc(holderName(u.holder_id))}</td>
+      <td>${u.es_admin ? '<span class="badge badge-pend">administrador</span> ' : ''}${u.activo ? '<span class="badge badge-ok">activo</span>' : '<span class="badge badge-warn">inactivo</span>'}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty-state">Sin usuarios.</td></tr>';
+  // Solo el administrador ve el formulario (la base igual lo exige en vincular_usuario).
+  const admin = soyAdministrador();
+  document.getElementById('cfgAdminForm').style.display = admin ? '' : 'none';
+  document.getElementById('cfgSoloAdmin').style.display = admin ? 'none' : '';
+  if (admin) document.getElementById('cfgHolder').innerHTML = holderOptions(null);
+}
+function soyAdministrador() {
+  const yo = CUENTAS.users.find(u => u.user_id === CUENTAS.miUserId);
+  return !!(yo && yo.activo && yo.es_admin);
+}
+
+async function handleVincularUsuario() {
+  const email = document.getElementById('cfgEmail').value.trim();
+  const holderId = document.getElementById('cfgHolder').value;
+  const activo = document.getElementById('cfgActivo').checked;
+  if (!email) { showToast('Ingresá el email con el que la persona entra al panel.'); return; }
+  const actual = CUENTAS.users.find(u => (u.nombre || '').toLowerCase() === email.toLowerCase());
+  if (!activo && !confirm(`¿Desactivar el acceso de ${email}? No podrá entrar al panel hasta que lo vuelvas a activar.`)) return;
+  if (activo && !actual && !confirm(`¿Autorizar a ${email} a usar el panel como ${holderName(holderId)}?`)) return;
+  try {
+    await vincularUsuario(email, holderId, activo);
+    document.getElementById('cfgEmail').value = '';
+    showToast('Usuario actualizado.');
+    renderConfig();
+  } catch (e) { showError(e); }
 }

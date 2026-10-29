@@ -170,3 +170,19 @@ tr.row-anulada td.no-strike{opacity:1;text-decoration:none}
   .draft-table td.quitar{grid-column:1/-1}
   .draft-table input{width:100%;font-size:1rem}
 }
+
+/* ---------- Tres cuentas (migración 003) ----------
+   Los elementos "solo-cuentas" se ven solo si la migración está aplicada;
+   los "sin-cuentas" se ocultan en ese modo. Sin la migración, el panel queda igual. */
+body:not(.modo-cuentas) .solo-cuentas{display:none !important}
+body.modo-cuentas .sin-cuentas{display:none !important}
+.sub-info{font-size:.78rem;color:var(--muted);margin-top:3px}
+.badge-cta{font-size:.7rem;white-space:nowrap}
+.badge-cta-eldo{background:rgba(212,170,75,.18);color:var(--gold)}
+.badge-cta-niko{background:rgba(90,150,230,.18);color:#8fb8ee}
+.badge-cta-aye{background:rgba(190,110,210,.18);color:#d39ae2}
+.reparto-fila{align-items:center;margin-bottom:6px}
+.cuenta-card h3{margin-bottom:10px}
+.cuenta-filas div{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:.88rem}
+.cuenta-filas span{color:var(--muted)}
+.cuenta-filas .destacado strong{color:var(--gold)}
