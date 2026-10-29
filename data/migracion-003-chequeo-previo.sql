@@ -52,7 +52,22 @@ union all
 select '5. Migración 003 ya aplicada',
        case when to_regclass('public.accounts') is null then 'OK (no aplicada)' else 'REVISAR: ya existe la tabla accounts' end
 union all
-select '6. Usuarios de Auth que quedarán vinculados a Diego', (select count(*)::text from auth.users)
+select '6. Usuarios de Auth (solo el administrador queda habilitado; el resto, pendiente)', (select count(*)::text from auth.users)
+union all
+select '6b. Usuario de Auth: ' || coalesce(email, '(sin email)'), 'Verificar cuál es el de Diego y copiar su email exacto en la migración'
+from auth.users
+union all
+select '8. RLS en ' || t, case when c.oid is null then 'OK (no existe)'
+                              when c.relrowsecurity then 'OK (RLS activo)'
+                              else 'REVISAR: RLS desactivado (la migración se detendrá)' end
+from unnest(array['products','clients','sales','orders','purchases','expenses','cash_movements','shipments','app_config']) t
+left join pg_class c on c.oid = to_regclass('public.' || t)
+union all
+select '9. Función ' || p.oid::regprocedure::text,
+       'Informativo: SECURITY DEFINER' || case when has_function_privilege('anon', p.oid, 'execute') then ', la ejecuta anon' else '' end
+         || case when has_function_privilege('authenticated', p.oid, 'execute') then ', la ejecuta authenticated' else '' end
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.prosecdef
 union all
 select '7. Productos con stock negativo (no bloquean, pero conviene revisar)', (select count(*)::text from public.products where stock < 0)
 order by 1;

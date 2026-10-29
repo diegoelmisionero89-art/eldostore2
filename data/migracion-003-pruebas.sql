@@ -2,7 +2,7 @@
 -- ELDOSTORE — Pruebas de la migración 003 (SOLO PARA EL PROYECTO DE PRUEBAS)
 --
 -- Crea datos de prueba (productos T003-*, usuarios t003-*@prueba.local) y ejecuta
--- los casos T1 a T16 de la auditoría. El resultado es una tabla: ok = true en todas.
+-- los casos T1 a T16 de la auditoría y T18 (accesos y administrador). El resultado es una tabla: ok = true en todas.
 --
 -- Protección: solo corre si existe la tabla public.eldo_base_de_pruebas, que se crea
 -- a mano en el proyecto de pruebas (ver instrucciones). En producción no existe.
@@ -24,7 +24,7 @@ revoke all on public.eldo_pruebas_resultados from anon, authenticated;
 do $pruebas$
 declare
   corrida text := to_char(clock_timestamp(), 'YYMMDDHH24MISSMS');
-  u_diego uuid; u_niko uuid; u_ayelen uuid; u_extra uuid;
+  u_diego uuid; u_niko uuid; u_ayelen uuid; u_extra uuid; u_admin uuid; u_nuevo uuid; e_admin text; e_niko text;
   a_eldo uuid := eldo_cuenta('eldostore'); a_niko uuid := eldo_cuenta('niko'); a_aye uuid := eldo_cuenta('ayelen');
   h_diego uuid := eldo_custodio('diego'); h_niko uuid := eldo_custodio('niko'); h_aye uuid := eldo_custodio('ayelen');
   pA uuid; pB uuid; pC uuid; pD uuid;
@@ -43,6 +43,13 @@ begin
   execute $f$ create or replace function pg_temp.saldo(p_acc uuid) returns numeric language sql as
     $b$ select coalesce(sum(case when tipo = 'ingreso' then monto else -monto end), 0) from public.cash_movements
         where account_id = p_acc $b$ $f$;
+  -- Ejecuta una sentencia con el rol indicado (como el navegador) y devuelve 'ok' o el error.
+  execute $f$ create or replace function pg_temp.intenta(p_rol text, p_sql text) returns text language plpgsql as
+    $b$ begin execute format('set local role %I', p_rol); execute p_sql; execute 'reset role'; return 'ok';
+        exception when others then return sqlerrm; end $b$ $f$;
+  execute $f$ create or replace function pg_temp.cuenta(p_rol text, p_sql text) returns bigint language plpgsql as
+    $b$ declare n bigint; begin execute format('set local role %I', p_rol); execute p_sql into n; execute 'reset role'; return n;
+        exception when others then return -1; end $b$ $f$;
   execute $f$ create or replace function pg_temp.como(p_uid uuid) returns void language sql as
     $b$ select set_config('request.jwt.claims', json_build_object('sub', p_uid, 'role', 'authenticated')::text, true) $b$ $f$;
 
@@ -63,6 +70,13 @@ begin
     (u_niko, h_niko, 'Niko (prueba)'), (u_ayelen, h_aye, 'Ayelen (prueba)')
   on conflict (user_id) do update set holder_id = excluded.holder_id, activo = true;
   delete from app_users where user_id = u_extra;
+  -- Usuario nuevo para probar la autorización (empieza siempre sin habilitar)
+  insert into auth.users (id, email) select gen_random_uuid(), 't003-nuevo@prueba.local'
+    where not exists (select 1 from auth.users where email = 't003-nuevo@prueba.local');
+  select id into u_nuevo from auth.users where email = 't003-nuevo@prueba.local';
+  delete from app_users where user_id = u_nuevo;
+  select a.user_id, u.email into u_admin, e_admin from app_users a join auth.users u on u.id = a.user_id where a.es_admin;
+  e_niko := 't003-niko@prueba.local';
 
   -- Productos: A de ELDOSTORE, B de Niko, C de Ayelen, D de ELDOSTORE (poco stock)
   insert into products (codigo, nombre, categoria, costo, precio, stock, owner_account_id) values
@@ -314,6 +328,88 @@ begin
     (select count(*) from catalogo_tienda()) > 0
     and not exists (select 1 from jsonb_object_keys((select to_jsonb(c) from catalogo_tienda() c limit 1)) k
                     where k in ('owner_account_id', 'costo', 'stock')));
+
+  -- ---------------- T18 Accesos: solo el administrador habilita usuarios ----------------
+  perform pg_temp.ok(corrida, 'T18a hay un solo administrador, activo y con custodio Diego',
+    (select count(*) from app_users where es_admin) = 1
+    and exists (select 1 from app_users where es_admin and activo and holder_id = h_diego));
+  perform pg_temp.ok(corrida, 'T18b los usuarios de prueba no son administradores',
+    not exists (select 1 from app_users where es_admin and user_id in (u_diego, u_niko, u_ayelen)));
+
+  -- Usuario con sesión pero sin autorizar
+  perform pg_temp.como(u_nuevo);
+  err := pg_temp.intenta('authenticated', format('select public.register_transfer(%L, null, null, %L::uuid, %L::uuid, 1, %L)', 'aporte', a_eldo, h_diego, 'x'));
+  perform pg_temp.ok(corrida, 'T18c un usuario sin autorizar no puede operar (funciones v3)', err <> 'ok', err);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, true)', 't003-nuevo@prueba.local', h_diego));
+  perform pg_temp.ok(corrida, 'T18d un usuario sin autorizar no puede habilitarse a sí mismo', err <> 'ok', err);
+  err := pg_temp.intenta('authenticated', $q$insert into public.cash_movements (tipo, origen, monto, descripcion) values ('ingreso', 'otro', 1, 'intrusión')$q$);
+  perform pg_temp.ok(corrida, 'T18e un usuario sin autorizar no puede escribir directo en la caja', err <> 'ok', err);
+  err := pg_temp.intenta('authenticated', $q$insert into public.clients (nombre) values ('intrusión')$q$);
+  perform pg_temp.ok(corrida, 'T18f un usuario sin autorizar no puede cargar clientes', err <> 'ok', err);
+  err := pg_temp.intenta('authenticated', format('update public.products set precio = 1 where id = %L', pA));
+  perform pg_temp.ok(corrida, 'T18g un usuario sin autorizar no puede cambiar productos',
+    (select precio from products where id = pA) = 10000, err);
+  perform pg_temp.ok(corrida, 'T18h un usuario sin autorizar no ve ventas, gastos ni caja',
+    pg_temp.cuenta('authenticated', 'select count(*) from public.sales') = 0
+    and pg_temp.cuenta('authenticated', 'select count(*) from public.expenses') = 0
+    and pg_temp.cuenta('authenticated', 'select count(*) from public.cash_movements') = 0);
+  err := pg_temp.intenta('authenticated', format('select public.void_sale(%L::uuid, %L)', s1, 'intrusión'));
+  perform pg_temp.ok(corrida, 'T18i las funciones v2 ya no se pueden llamar directo desde el navegador',
+    err <> 'ok' and not exists (select 1 from sales where id = s1 and motivo_anulacion = 'intrusión'), err);
+  perform pg_temp.ok(corrida, 'T18j la tienda pública sigue leyendo productos (anon y con sesión)',
+    pg_temp.cuenta('anon', 'select count(*) from public.catalogo_tienda()') > 0
+    and pg_temp.cuenta('authenticated', 'select count(*) from public.catalogo_tienda()') > 0);
+
+  -- Usuario habilitado que NO es administrador (Niko)
+  perform pg_temp.como(u_niko);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, true)', 't003-nuevo@prueba.local', h_aye));
+  perform pg_temp.ok(corrida, 'T18k un usuario habilitado no administrador no puede habilitar a otro',
+    err <> 'ok' and not exists (select 1 from app_users where user_id = u_nuevo), err);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, false)', e_admin, h_niko));
+  perform pg_temp.ok(corrida, 'T18l un usuario no administrador no puede desactivar al administrador',
+    err <> 'ok' and exists (select 1 from app_users where user_id = u_admin and activo and holder_id = h_diego), err);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, true)', e_niko, h_diego));
+  perform pg_temp.ok(corrida, 'T18m un usuario no administrador no puede cambiar su propio custodio',
+    err <> 'ok' and exists (select 1 from app_users where user_id = u_niko and holder_id = h_niko), err);
+  err := pg_temp.intenta('authenticated', format('update public.app_users set es_admin = true where user_id = %L', u_niko));
+  perform pg_temp.ok(corrida, 'T18n nadie puede darse permisos de administrador editando la tabla',
+    err <> 'ok' and not exists (select 1 from app_users where user_id = u_niko and es_admin), err);
+  err := pg_temp.intenta('authenticated', $q$insert into public.clients (nombre) values ('cliente T18 (prueba)')$q$);
+  perform pg_temp.ok(corrida, 'T18o un usuario habilitado sigue usando el panel normalmente', err = 'ok', err);
+  delete from clients where nombre = 'cliente T18 (prueba)';
+  perform pg_temp.ok(corrida, 'T18p funciones internas y v2 no ejecutables desde el navegador',
+    not has_function_privilege('authenticated', 'public._eldo3_crear_venta(uuid, jsonb, text, text, uuid, uuid, uuid, jsonb)', 'execute')
+    and not has_function_privilege('authenticated', 'public.eldo_set_ctx(uuid, uuid)', 'execute')
+    and not has_function_privilege('authenticated', 'public.eldo_auditar(text, text, uuid, jsonb)', 'execute')
+    and not has_function_privilege('authenticated', 'public.eldo_es_admin()', 'execute')
+    and not has_function_privilege('anon', 'public.vincular_usuario(text, uuid, boolean)', 'execute')
+    and not exists (select 1 from public.eldo_003_permisos_originales o
+                    where has_function_privilege('authenticated', o.firma::regprocedure, 'execute')
+                       or has_function_privilege('anon', o.firma::regprocedure, 'execute')));
+
+  -- El administrador autoriza, cambia y desactiva
+  perform pg_temp.como(u_admin);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, true)', 't003-nuevo@prueba.local', h_aye));
+  perform pg_temp.ok(corrida, 'T18q el administrador habilita a un usuario nuevo (sin permisos de administrador)',
+    err = 'ok' and exists (select 1 from app_users where user_id = u_nuevo and activo and holder_id = h_aye and not es_admin), err);
+  perform pg_temp.como(u_nuevo);
+  perform pg_temp.ok(corrida, 'T18r después de autorizado, el usuario entra y ve las cuentas',
+    pg_temp.cuenta('authenticated', 'select count(*) from public.accounts') = 3, '');
+  perform pg_temp.como(u_admin);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, true)', 't003-nuevo@prueba.local', h_niko));
+  perform pg_temp.ok(corrida, 'T18s el administrador cambia el custodio de otro usuario',
+    err = 'ok' and exists (select 1 from app_users where user_id = u_nuevo and holder_id = h_niko), err);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, false)', 't003-nuevo@prueba.local', h_niko));
+  perform pg_temp.como(u_nuevo);
+  perform pg_temp.ok(corrida, 'T18t desactivado, el usuario ya no ve ni opera',
+    err = 'ok' and pg_temp.cuenta('authenticated', 'select count(*) from public.accounts') = 0
+    and pg_temp.intenta('authenticated', format('select public.register_transfer(%L, null, null, %L::uuid, %L::uuid, 1, %L)', 'aporte', a_eldo, h_diego, 'x')) <> 'ok', err);
+  perform pg_temp.como(u_admin);
+  err := pg_temp.intenta('authenticated', format('select public.vincular_usuario(%L, %L::uuid, false)', e_admin, h_diego));
+  perform pg_temp.ok(corrida, 'T18u el administrador no puede desactivarse a sí mismo desde el panel',
+    err <> 'ok' and exists (select 1 from app_users where user_id = u_admin and activo), err);
+  perform pg_temp.ok(corrida, 'T18v cada cambio de acceso queda en la auditoría',
+    (select count(*) from audit_log where accion = 'vincular_usuario' and registro = u_nuevo) >= 3);
 
   perform set_config('request.jwt.claims', '', true);
 end

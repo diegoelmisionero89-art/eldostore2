@@ -21,12 +21,46 @@
 --     sin dejar datos, que las tablas acepten las filas que se van a insertar.
 --     Si algo no coincide, se detiene con un mensaje claro.
 --
+-- Accesos (corrección de seguridad, revisión ChatGPT):
+--   * Solo queda habilitado el ADMINISTRADOR (Diego), identificado por su email de
+--     Supabase Auth, que se escribe abajo (paso "ANTES DE CORRER"). Nadie más queda
+--     habilitado automáticamente: Niko y Ayelen quedan pendientes hasta que Diego
+--     los autorice desde Configuración → Usuarios del panel.
+--   * Solo el administrador puede vincular, activar, desactivar o cambiar el custodio
+--     de otros usuarios. Ningún usuario puede darse permisos de administrador.
+--   * Las tablas existentes reciben políticas RESTRICTIVAS adicionales: solo usuarios
+--     habilitados pueden leer o escribir datos internos. Las políticas actuales no se
+--     reemplazan. La tienda pública (catalogo_tienda y lectura de productos) no cambia.
+--   * Las funciones actuales que modifican datos (v2) dejan de poder ejecutarse
+--     directamente desde el navegador; el panel nuevo usa las v3, que las llaman por
+--     dentro. Los permisos originales se guardan para la reversión.
+--
 -- Cómo correrla (proyecto de pruebas): SQL Editor → pegar TODO el archivo → Run.
 -- Antes y después: Q2 de CONSULTAS-SOLO-LECTURA-ELDOSTORE.sql (tiene que dar igual).
 -- Reversión: data/migracion-003-revertir.sql
 -- =============================================================================
 
 begin;
+
+-- ===================== ANTES DE CORRER =====================================
+-- Reemplazá EMAIL_DEL_ADMINISTRADOR por el email EXACTO con el que Diego entra al
+-- panel (Supabase → Authentication → Users). Si no coincide con un usuario
+-- existente, la migración se detiene sin cambiar nada.
+select set_config('eldo.admin_email', 'EMAIL_DEL_ADMINISTRADOR', true);
+-- ===========================================================================
+
+do $admin$
+declare v_email text := lower(trim(current_setting('eldo.admin_email', true))); n int;
+begin
+  if v_email is null or v_email = '' or v_email = lower('EMAIL_DEL_ADMINISTRADOR') then
+    raise exception 'Falta indicar el email del administrador (línea "ANTES DE CORRER"). No se hizo ningún cambio.';
+  end if;
+  select count(*) into n from auth.users where lower(email) = v_email;
+  if n <> 1 then
+    raise exception 'El email del administrador no corresponde a un único usuario de Supabase Auth (encontrados: %). No se hizo ningún cambio.', n;
+  end if;
+end
+$admin$;
 
 -- -----------------------------------------------------------------------------
 -- 0. VERIFICACIONES (no cambian nada; abortan si la base no es la esperada)
@@ -110,7 +144,7 @@ begin
 
   -- Nombres que la migración va a crear no deben existir
   for r in select unnest(array['cash_holders','app_users','sale_allocations','expense_allocations',
-                               'account_transfers','stock_adjustments','audit_log']) as n loop
+                               'account_transfers','stock_adjustments','audit_log','eldo_003_permisos_originales']) as n loop
     if to_regclass('public.' || r.n) is not null then
       raise exception 'Ya existe la tabla %. No se hizo ningún cambio.', r.n;
     end if;
@@ -192,13 +226,17 @@ create table public.app_users (
   holder_id uuid not null references public.cash_holders (id),
   nombre text not null default '',
   activo boolean not null default true,
-  creado timestamptz not null default now()
+  es_admin boolean not null default false,
+  creado timestamptz not null default now(),
+  check (not es_admin or activo)
 );
--- Los usuarios que existen hoy quedan vinculados a Diego, para no dejar a nadie
--- sin acceso. Revisar después de migrar (Configuración → Usuarios del panel).
-insert into public.app_users (user_id, holder_id, nombre)
-select u.id, (select id from public.cash_holders where codigo = 'diego'), coalesce(u.email, '')
-from auth.users u;
+-- Un solo administrador.
+create unique index app_users_un_admin on public.app_users ((true)) where es_admin;
+-- Solo el administrador (Diego) queda habilitado. El resto de los usuarios de Auth
+-- NO se habilita: Diego los autoriza después desde el panel.
+insert into public.app_users (user_id, holder_id, nombre, activo, es_admin)
+select u.id, (select id from public.cash_holders where codigo = 'diego'), coalesce(u.email, ''), true, true
+from auth.users u where lower(u.email) = lower(trim(current_setting('eldo.admin_email', true)));
 
 -- -----------------------------------------------------------------------------
 -- 2. FUNCIONES AUXILIARES (contexto y control de acceso)
@@ -228,6 +266,11 @@ $$;
 create function public.eldo_es_usuario_activo() returns boolean
 language sql stable security definer set search_path = public, pg_temp as $$
   select exists (select 1 from app_users where user_id = auth.uid() and activo)
+$$;
+
+create function public.eldo_es_admin() returns boolean
+language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (select 1 from app_users where user_id = auth.uid() and activo and es_admin)
 $$;
 
 -- Devuelve el custodio del usuario actual o detiene la operación.
@@ -937,16 +980,26 @@ end $$;
 -- Vincula un usuario de Supabase Auth (creado en Authentication → Users) a un custodio.
 create function public.vincular_usuario(p_email text, p_holder_id uuid, p_activo boolean default true)
 returns jsonb language plpgsql volatile security definer set search_path = public, pg_temp as $$
-declare v_uid uuid;
+declare v_uid uuid; v_antes record;
 begin
   perform eldo_requiere_usuario();
+  -- Solo el administrador administra accesos. Nadie puede darse ni dar permisos de administrador:
+  -- esta función no tiene forma de cambiar es_admin.
+  if not eldo_es_admin() then
+    raise exception 'Solo el administrador puede habilitar, desactivar o modificar usuarios.';
+  end if;
   perform eldo_valida_custodio(p_holder_id);
+  if p_activo is null then raise exception 'Indicá si el usuario queda activo.'; end if;
   select id into v_uid from auth.users where lower(email) = lower(trim(p_email));
   if v_uid is null then raise exception 'No existe un usuario con ese email en Supabase Auth.'; end if;
-  if v_uid = auth.uid() and not p_activo then raise exception 'No podés desactivar tu propio usuario.'; end if;
-  insert into app_users (user_id, holder_id, nombre, activo) values (v_uid, p_holder_id, trim(p_email), p_activo)
+  if v_uid = auth.uid() then raise exception 'El administrador no puede modificar su propio acceso desde el panel.'; end if;
+  select * into v_antes from app_users where user_id = v_uid for update;
+  if found and v_antes.es_admin then raise exception 'El acceso del administrador no se modifica desde el panel.'; end if;
+  insert into app_users (user_id, holder_id, nombre, activo, es_admin) values (v_uid, p_holder_id, trim(p_email), p_activo, false)
   on conflict (user_id) do update set holder_id = excluded.holder_id, activo = excluded.activo;
-  perform eldo_auditar('vincular_usuario', 'app_users', v_uid, jsonb_build_object('custodio', p_holder_id, 'activo', p_activo));
+  perform eldo_auditar('vincular_usuario', 'app_users', v_uid, jsonb_build_object(
+    'custodio_antes', v_antes.holder_id, 'activo_antes', v_antes.activo,
+    'custodio', p_holder_id, 'activo', p_activo));
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -1006,6 +1059,55 @@ to authenticated;
 -- Los valores por defecto se evalúan con el usuario que inserta (panel actual):
 grant execute on function public.eldo_ctx_account(), public.eldo_ctx_holder(), public.eldo_es_usuario_activo()
 to authenticated;
+
+-- -----------------------------------------------------------------------------
+-- 11b. ACCESO A LAS TABLAS Y FUNCIONES EXISTENTES (corrección de seguridad)
+-- -----------------------------------------------------------------------------
+-- Políticas RESTRICTIVAS: se suman a las actuales (que no se tocan). Un usuario con
+-- sesión pero no habilitado no puede leer ni modificar datos internos. Productos:
+-- la lectura no se restringe, para no afectar a la tienda pública.
+do $restriccion$
+declare t text; tablas text[] := array['products','clients','sales','orders','purchases','expenses',
+                                       'cash_movements','shipments','app_config'];
+begin
+  foreach t in array tablas loop
+    if to_regclass('public.' || t) is null then continue; end if;
+    if not (select relrowsecurity from pg_class where oid = ('public.' || t)::regclass) then
+      raise exception 'La tabla % no tiene RLS activado: revisar sus permisos antes de migrar. No se hizo ningún cambio.', t;
+    end if;
+    execute format('create policy eldo003_alta_habilitados on public.%I as restrictive for insert to authenticated with check (public.eldo_es_usuario_activo())', t);
+    execute format('create policy eldo003_cambio_habilitados on public.%I as restrictive for update to authenticated using (public.eldo_es_usuario_activo()) with check (public.eldo_es_usuario_activo())', t);
+    execute format('create policy eldo003_baja_habilitados on public.%I as restrictive for delete to authenticated using (public.eldo_es_usuario_activo())', t);
+    if t <> 'products' then
+      execute format('create policy eldo003_lectura_habilitados on public.%I as restrictive for select to authenticated using (public.eldo_es_usuario_activo())', t);
+    end if;
+  end loop;
+end
+$restriccion$;
+
+-- Funciones actuales que modifican datos: se guardan sus permisos y se quita la
+-- ejecución directa desde el navegador (public, anon, authenticated). Siguen
+-- funcionando dentro de las v3. La reversión restaura estos permisos tal cual.
+create table public.eldo_003_permisos_originales (firma text primary key, acl text);
+revoke all on public.eldo_003_permisos_originales from anon, authenticated;
+do $v2$
+declare f record;
+begin
+  for f in select p.oid::regprocedure::text as sig, p.proacl::text as acl
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname in (
+             'register_sale', 'register_sale_v2', 'void_sale', 'correct_sale', 'convert_order_to_sale',
+             'register_purchase', 'void_purchase', 'correct_purchase',
+             'register_expense', 'void_expense', 'correct_expense') loop
+    insert into public.eldo_003_permisos_originales (firma, acl) values (f.sig, f.acl);
+    execute format('revoke execute on function %s from public, anon, authenticated', f.sig);
+    -- Asegura que quien instala (dueño de las v3) pueda seguir llamándola.
+    if (select pg_get_userbyid(proowner) from pg_proc where oid = f.sig::regprocedure) <> current_user then
+      execute format('grant execute on function %s to %I', f.sig, current_user);
+    end if;
+  end loop;
+end
+$v2$;
 
 -- -----------------------------------------------------------------------------
 -- 12. CONTROL FINAL (dentro de la misma transacción)

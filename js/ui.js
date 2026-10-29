@@ -81,7 +81,7 @@ async function boot() {
   if (CUENTAS.activa && !CUENTAS.habilitado) {
     document.querySelector('.content').innerHTML = `<div class="panel"><h3 style="color:var(--red)">Tu usuario no está habilitado</h3>
       <p style="color:var(--muted)">El panel ya trabaja con tres cuentas (ELDOSTORE, Niko y Ayelen) y tu usuario todavía no fue vinculado.
-      Pedile a alguien habilitado que te agregue en <strong>Configuración → Usuarios del panel</strong>.</p></div>`;
+      Pedile al administrador (Diego) que te autorice en <strong>Configuración → Usuarios del panel</strong>.</p></div>`;
     return;
   }
   document.body.classList.toggle('modo-cuentas', modoCuentas());
@@ -1495,9 +1495,17 @@ function renderConfig() {
   el.innerHTML = CUENTAS.users.length ? CUENTAS.users.map(u => `
     <tr><td>${esc(u.nombre) || '—'}${u.user_id === CUENTAS.miUserId ? ' <span class="badge badge-ok">vos</span>' : ''}</td>
       <td>${esc(holderName(u.holder_id))}</td>
-      <td>${u.activo ? '<span class="badge badge-ok">activo</span>' : '<span class="badge badge-warn">inactivo</span>'}</td></tr>`).join('')
+      <td>${u.es_admin ? '<span class="badge badge-pend">administrador</span> ' : ''}${u.activo ? '<span class="badge badge-ok">activo</span>' : '<span class="badge badge-warn">inactivo</span>'}</td></tr>`).join('')
     : '<tr><td colspan="3" class="empty-state">Sin usuarios.</td></tr>';
-  document.getElementById('cfgHolder').innerHTML = holderOptions(null);
+  // Solo el administrador ve el formulario (la base igual lo exige en vincular_usuario).
+  const admin = soyAdministrador();
+  document.getElementById('cfgAdminForm').style.display = admin ? '' : 'none';
+  document.getElementById('cfgSoloAdmin').style.display = admin ? 'none' : '';
+  if (admin) document.getElementById('cfgHolder').innerHTML = holderOptions(null);
+}
+function soyAdministrador() {
+  const yo = CUENTAS.users.find(u => u.user_id === CUENTAS.miUserId);
+  return !!(yo && yo.activo && yo.es_admin);
 }
 
 async function handleVincularUsuario() {
@@ -1505,6 +1513,9 @@ async function handleVincularUsuario() {
   const holderId = document.getElementById('cfgHolder').value;
   const activo = document.getElementById('cfgActivo').checked;
   if (!email) { showToast('Ingresá el email con el que la persona entra al panel.'); return; }
+  const actual = CUENTAS.users.find(u => (u.nombre || '').toLowerCase() === email.toLowerCase());
+  if (!activo && !confirm(`¿Desactivar el acceso de ${email}? No podrá entrar al panel hasta que lo vuelvas a activar.`)) return;
+  if (activo && !actual && !confirm(`¿Autorizar a ${email} a usar el panel como ${holderName(holderId)}?`)) return;
   try {
     await vincularUsuario(email, holderId, activo);
     document.getElementById('cfgEmail').value = '';

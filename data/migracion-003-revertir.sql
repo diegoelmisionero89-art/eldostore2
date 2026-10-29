@@ -8,6 +8,8 @@
 -- (incluidos los registrados con las funciones v3). Los totales generales siguen
 -- siendo correctos. Qué se pierde: a qué cuenta y custodio corresponde cada importe,
 -- los repartos de gastos, la auditoría y los usuarios del panel (app_users).
+-- También quita las políticas restrictivas agregadas y devuelve a las funciones v2
+-- los permisos de ejecución que tenían antes de migrar.
 -- Las funciones originales (v2) nunca se tocaron: siguen funcionando igual.
 -- Después de revertir, volver a publicar el panel anterior.
 -- =============================================================================
@@ -23,6 +25,37 @@ select
 
 -- PASO B — revertir (pegar desde aquí hasta el final).
 begin;
+
+-- Políticas restrictivas agregadas a las tablas existentes
+do $politicas$
+declare r record;
+begin
+  for r in select schemaname, tablename, policyname from pg_policies
+           where schemaname = 'public' and policyname like 'eldo003\_%' loop
+    execute format('drop policy %I on %I.%I', r.policyname, r.schemaname, r.tablename);
+  end loop;
+end
+$politicas$;
+
+-- Permisos originales de las funciones v2 (se restauran tal como estaban)
+do $permisos$
+declare f record; g record;
+begin
+  if to_regclass('public.eldo_003_permisos_originales') is null then return; end if;
+  for f in select firma, acl from public.eldo_003_permisos_originales loop
+    if f.acl is null then
+      -- Sin permisos explícitos = permiso por defecto de PostgreSQL (PUBLIC puede ejecutar)
+      execute format('grant execute on function %s to public', f.firma);
+    else
+      for g in select distinct grantee from aclexplode(f.acl::aclitem[]) where privilege_type = 'EXECUTE' loop
+        if g.grantee = 0 then execute format('grant execute on function %s to public', f.firma);
+        else execute format('grant execute on function %s to %I', f.firma, g.grantee::regrole::text); end if;
+      end loop;
+    end if;
+  end loop;
+end
+$permisos$;
+drop table if exists public.eldo_003_permisos_originales;
 
 drop function if exists
   public.register_sale_v3(uuid, jsonb, text, text, uuid),
@@ -49,7 +82,8 @@ drop function if exists
   public.eldo_set_ctx(uuid, uuid),
   public.eldo_valida_cuenta(uuid),
   public.eldo_valida_custodio(uuid),
-  public.eldo_requiere_usuario();
+  public.eldo_requiere_usuario(),
+  public.eldo_es_admin();
 
 -- Columnas agregadas a tablas existentes (los datos de esas filas se conservan)
 alter table public.cash_movements

@@ -294,8 +294,10 @@
       <section class="view" id="view-config">
         <div class="panel solo-cuentas">
           <h3>Usuarios del panel</h3>
-          <p style="color:var(--muted);font-size:.85rem;margin-bottom:12px">Solo los usuarios de esta lista pueden usar el panel. Cada uno queda asociado a la persona que tiene el dinero cuando cobra o paga. La persona primero tiene que existir en Supabase Auth.</p>
+          <p style="color:var(--muted);font-size:.85rem;margin-bottom:12px">Solo los usuarios activos de esta lista pueden usar el panel; los demás quedan pendientes hasta que el administrador los autorice. Cada uno queda asociado a la persona que tiene el dinero cuando cobra o paga. La persona primero tiene que existir en Supabase Auth.</p>
           <div class="table-wrap"><table><thead><tr><th>Usuario</th><th>Persona</th><th>Estado</th></tr></thead><tbody id="cfgUsuarios"></tbody></table></div>
+          <p id="cfgSoloAdmin" style="color:var(--muted);font-size:.85rem;margin-top:10px">Solo el administrador puede autorizar, desactivar o modificar usuarios.</p>
+          <div id="cfgAdminForm">
           <div class="two-col" style="margin-top:12px">
             <div class="field"><label>Email</label><input type="email" id="cfgEmail" autocomplete="off"></div>
             <div class="field"><label>Persona</label><select id="cfgHolder"></select></div>
@@ -304,6 +306,7 @@
             <input type="checkbox" id="cfgActivo" checked style="width:auto;min-width:0;padding:0"> Activo
           </label>
           <button class="btn btn-sm" onclick="handleVincularUsuario()">Agregar / actualizar usuario</button>
+          </div>
         </div>
         <div class="panel">
           <h3>Respaldo de datos</h3>

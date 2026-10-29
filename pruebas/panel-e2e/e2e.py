@@ -47,7 +47,16 @@ with sync_playwright() as p:
 
     # ===================== MODO TRES CUENTAS (base migrada) =====================
     DB = 'eldo_prueba_local'
-    print('\n== Base migrada, usuario Diego')
+    print('\n== Base migrada: Niko antes de ser autorizado')
+    check('A1 al migrar solo el administrador queda habilitado',
+          sql(DB, "select string_agg(nombre||':'||es_admin, ',') from app_users") == 'diego@prueba.local:true')
+    ctx, page, err = abrir(p, DB, NIKO, 'niko@prueba.local')
+    check('A2 Niko sin autorizar ve el aviso y no entra', 'no está habilitado' in page.inner_text('.content'))
+    r = page.evaluate("sb.rpc('vincular_usuario',{p_email:'niko@prueba.local',p_holder_id:null,p_activo:true}).then(x=>x.error&&x.error.message)")
+    check('A3 Niko no puede autorizarse a sí mismo', bool(r) and sql(DB, f"select count(*) from app_users where user_id='{NIKO}'") == '0', r)
+    ctx.close()
+
+    print('\n== Base migrada, usuario Diego (administrador)')
     ctx, page, err = abrir(p, DB, DIEGO, 'diego@prueba.local')
     check('C1 carga sin errores de JavaScript', not err and 'No se pudo conectar' not in page.inner_text('body'), err)
     check('C2 aparece el menú Cuentas', page.is_visible('.nav-item[data-view="cuentas"]'))
@@ -125,7 +134,9 @@ with sync_playwright() as p:
     # stock con motivo y cambio de dueño
     # usuarios
     ir(page, 'config'); page.wait_for_timeout(300)
-    check('C21 panel de usuarios lista a Diego', 'diego@prueba.local' in page.inner_text('#cfgUsuarios'))
+    check('C21 panel de usuarios lista a Diego como administrador',
+          'diego@prueba.local' in page.inner_text('#cfgUsuarios') and 'administrador' in page.inner_text('#cfgUsuarios'))
+    check('C21b el administrador ve el formulario de accesos', page.is_visible('#cfgAdminForm'))
     page.fill('#cfgEmail', 'niko@prueba.local'); page.select_option('#cfgHolder', label='Niko'); page.click('text=Agregar / actualizar usuario'); page.wait_for_timeout(1000)
     check('C22 vincula a Niko', sql(DB, f"select h.codigo from app_users u join cash_holders h on h.id=u.holder_id where u.user_id='{NIKO}'") == 'niko', toast(page))
     check('C23 sin errores de JavaScript', not err, err)
@@ -138,8 +149,17 @@ with sync_playwright() as p:
           'no' in json.dumps(page.evaluate("sb.rpc('register_transfer',{p_tipo:'aporte',p_from_account:null,p_from_holder:null,p_to_account:null,p_to_holder:null,p_monto:1,p_motivo:'x'})")).lower())
     ctx.close()
 
-    print('\n== Niko recién vinculado')
+    print('\n== Niko recién vinculado (no administrador)')
     ctx, page, err = abrir(p, DB, NIKO, 'niko@prueba.local')
+    ir(page, 'config')
+    check('C29 Niko no ve el formulario de accesos', not page.is_visible('#cfgAdminForm') and page.is_visible('#cfgSoloAdmin'))
+    aye_h = sql(DB, "select id from cash_holders where codigo='ayelen'")
+    r = page.evaluate(f"sb.rpc('vincular_usuario',{{p_email:'ayelen@prueba.local',p_holder_id:'{aye_h}',p_activo:true}}).then(x=>x.error&&x.error.message)")
+    check('C30 Niko no puede habilitar a Ayelen', bool(r) and sql(DB, f"select count(*) from app_users where user_id='{AYE}'") == '0', r)
+    r = page.evaluate("sb.from('app_users').update({es_admin:true}).eq('user_id','" + NIKO + "').then(x=>x.error&&x.error.message)")
+    check('C31 Niko no puede darse permisos de administrador', sql(DB, f"select es_admin from app_users where user_id='{NIKO}'") == 'f', r)
+    r = page.evaluate("sb.rpc('void_sale',{p_sale_id:'00000000-0000-0000-0000-000000000000',p_motivo:'x'}).then(x=>x.error&&x.error.message)")
+    check('C32 las funciones v2 no se llaman directo desde el navegador', bool(r) and 'permission' in r.lower(), r)
     ir(page, 'ventas'); page.click('text=+ Registrar venta'); page.wait_for_timeout(300)
     check('C26 "¿Quién cobró?" por defecto es Niko', page.eval_on_selector('#v_holder', 's => s.options[s.selectedIndex].text') == 'Niko')
     check('C27 sin errores de JavaScript', not err, err)

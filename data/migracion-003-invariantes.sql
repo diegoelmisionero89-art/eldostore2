@@ -66,4 +66,15 @@ union all select 'I6 Datos anteriores a la migración fuera de ELDOSTORE',
    where a.origen = 'historico' and c.codigo <> 'eldostore')
   + (select count(*) from public.expense_allocations a join public.accounts c on c.id = a.account_id
      where a.origen = 'historico' and c.codigo <> 'eldostore')
+union all select 'I7 Exactamente un administrador, activo y con custodio Diego',
+  (select case when count(*) = 1 and bool_and(u.activo) and bool_and(h.codigo = 'diego') then 0 else 1 end
+   from public.app_users u join public.cash_holders h on h.id = u.holder_id where u.es_admin)
+union all select 'I8 Funciones v2 que todavía se ejecutan desde el navegador',
+  (select count(*) from public.eldo_003_permisos_originales o
+   where has_function_privilege('anon', o.firma::regprocedure, 'execute')
+      or has_function_privilege('authenticated', o.firma::regprocedure, 'execute'))
+union all select 'I9 Tablas internas sin la restricción de usuarios habilitados',
+  (select count(*) from unnest(array['products','clients','sales','orders','purchases','expenses','cash_movements','shipments','app_config']) t
+   where to_regclass('public.' || t) is not null
+     and not exists (select 1 from pg_policies p where p.schemaname = 'public' and p.tablename = t and p.policyname = 'eldo003_alta_habilitados'))
 order by 1;
