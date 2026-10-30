@@ -1,0 +1,70 @@
+# ELDOSTORE — Fichas para compartir (vista previa por producto en WhatsApp y Facebook)
+#
+# Genera p/<código>/index.html con la foto, el nombre, el código y el precio de cada
+# producto publicado, leyendo SOLO catalogo_tienda() (clave publicable de index.html).
+# No escribe en Supabase. Guarda las páginas en la MISMA rama donde corre:
+#   - rama de prueba (galeria-ficha): enlaces a la versión de prueba (raw.githack.com)
+#   - main (cuando se apruebe): TODO con https://eldostore.com.ar/ (enlace, canónica,
+#     og:url y og:image: la foto principal se copia a p/<código>/foto.jpg). Corre al
+#     publicar y después cada hora para seguir los cambios de precio, foto o stock.
+#     En main, si alguna página tuviera otra dirección, el workflow falla y no guarda.
+name: Fichas para compartir
+
+on:
+  push:
+    branches: [main, galeria-ficha]
+    paths: ['herramientas/generar-fichas.py', '.github/workflows/fichas-compartir.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fichas-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Pillow (para achicar las fotos de la vista previa)
+        run: python3 -m pip install --quiet pillow==10.4.0
+
+      - name: Generar páginas
+        run: |
+          set -euo pipefail
+          rama="${GITHUB_REF_NAME}"
+          if [ "$rama" = "main" ]; then
+            base="https://eldostore.com.ar/"; pagina=""
+          else
+            base="https://raw.githack.com/${GITHUB_REPOSITORY}/${rama}/"; pagina="index.html"
+          fi
+          python3 herramientas/generar-fichas.py --base "$base" --pagina "$pagina" --copiar-fotos --resumen "$GITHUB_STEP_SUMMARY"
+
+      - name: Verificar que todo use el dominio oficial (solo en main)
+        if: github.ref_name == 'main'
+        run: |
+          set -uo pipefail
+          malas=0
+          for f in p/*/index.html; do
+            for prop in 'rel="canonical" href' 'property="og:url" content' 'property="og:image" content'; do
+              grep -q "$prop=\"https://eldostore.com.ar/" "$f" || { echo "::error::$f: $prop no usa https://eldostore.com.ar/"; malas=$((malas+1)); }
+            done
+            grep -q 'location.replace("https://eldostore.com.ar/?p=' "$f" || { echo "::error::$f: la redirección no va a eldostore.com.ar"; malas=$((malas+1)); }
+          done
+          if grep -rlE 'githack|github\.io|githubusercontent|supabase\.co' p/*/index.html; then echo "::error::Hay direcciones que no son del dominio oficial"; malas=$((malas+1)); fi
+          [ "$malas" -eq 0 ] || exit 1
+          echo "Todas las páginas usan https://eldostore.com.ar/" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar cambios
+        run: |
+          git add -A p
+          if git diff --cached --quiet; then echo "Sin cambios en las páginas."; exit 0; fi
+          git -c user.name="ELDOSTORE bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Fichas para compartir: actualización automática"
+          git push
