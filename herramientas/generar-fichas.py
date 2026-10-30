@@ -12,8 +12,11 @@ la ficha de la tienda (?p=<código>).
   repetidos o con caracteres que no sirven en una dirección (esos productos se
   comparten con ?p=… y muestran la vista previa general).
 - Si el catálogo llega vacío o con error, se detiene SIN borrar las páginas existentes.
+- Con --copiar-fotos, la foto principal se copia a p/<código>/foto.jpg (máximo
+  1200 px y unos 300 KB, para que WhatsApp la muestre), así la vista previa usa
+  el mismo dominio de la tienda. Solo se vuelve a descargar si la foto cambió.
 """
-import argparse, html, json, os, re, sys, urllib.request, urllib.error
+import argparse, hashlib, html, io, json, os, re, shutil, sys, urllib.request, urllib.error
 
 CODIGO_RUTA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 MARCA = '<meta name="eldostore-ficha"'
@@ -40,11 +43,44 @@ def leer_catalogo(url, key, funcion="catalogo_tienda"):
         sys.exit(f"catalogo_tienda() respondió {e.code}: {e.read()[:300]!r}")
 
 
+def descargar(url):
+    pedido = urllib.request.Request(url, headers={"User-Agent": "ELDOSTORE-fichas/1.0"})
+    with urllib.request.urlopen(pedido, timeout=30) as r:
+        return r.read(12 * 1024 * 1024)
+
+
+def preparar_foto(url, destino):
+    """Descarga la foto y la guarda como JPEG liviano. Devuelve (ancho, alto) o None."""
+    from PIL import Image  # pillow: se instala en el workflow
+    try:
+        im = Image.open(io.BytesIO(descargar(url)))
+        im.load()
+    except Exception as e:  # foto que no carga: se usa la imagen general
+        print(f"  aviso: no se pudo usar la foto {url}: {e}")
+        return None
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA")
+        fondo = Image.new("RGB", im.size, (255, 255, 255))
+        fondo.paste(im, mask=im.split()[-1])
+        im = fondo
+    else:
+        im = im.convert("RGB")
+    im.thumbnail((1200, 1200))
+    for calidad in (85, 78, 70, 62, 55):
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=calidad, optimize=True, progressive=True)
+        if buf.tell() <= 300 * 1024:
+            break
+    with open(destino, "wb") as f:
+        f.write(buf.getvalue())
+    return im.size
+
+
 def precio_txt(n):
     return "$ " + f"{int(round(n)):,}".replace(",", ".")
 
 
-def pagina(p, url_ficha, destino, imagen):
+def pagina(p, url_ficha, destino, imagen, medidas=None):
     nombre = p["nombre"]
     partes = [f"Código: {p['codigo']}"]
     partes.append(precio_txt(p["precio"]) if p["precio"] else "Consultá el precio")
@@ -69,6 +105,7 @@ def pagina(p, url_ficha, destino, imagen):
 <meta property="og:url" content="{a(url_ficha)}">
 <meta property="og:image" content="{a(imagen)}">
 <meta property="og:image:alt" content="{a(nombre)}">
+{(f'<meta property="og:image:width" content="{medidas[0]}">' + chr(10) + f'<meta property="og:image:height" content="{medidas[1]}">' + chr(10)) if medidas else ""}<meta property="og:image:type" content="image/jpeg">
 {precio_meta}<meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#080808">
 <meta name="eldostore-ficha" content="{a(p['codigo'])}">
@@ -90,6 +127,7 @@ def main():
     ap.add_argument("--entrada", help="JSON del catálogo (solo para pruebas locales)")
     ap.add_argument("--fotos", help="JSON de fotos_tienda() (solo para pruebas locales)")
     ap.add_argument("--resumen", help="Archivo donde agregar el resumen (GITHUB_STEP_SUMMARY)")
+    ap.add_argument("--copiar-fotos", action="store_true", help="Copiar la foto principal a p/<código>/foto.jpg")
     o = ap.parse_args()
     base = o.base.rstrip("/") + "/"
 
@@ -116,6 +154,10 @@ def main():
 
     carpeta = os.path.join(o.salida, "p")
     os.makedirs(carpeta, exist_ok=True)
+    registro_fotos = os.path.join(carpeta, "fotos.json")  # código -> foto de origen ya copiada
+    try: fotos_copiadas = json.load(open(registro_fotos, encoding="utf-8"))
+    except (OSError, ValueError): fotos_copiadas = {}
+    nuevas_fotos = 0
     hechos, omitidos = set(), []
     imagen_general = base + "img/banner-tecnologia.jpg"
     for r in filas:
@@ -130,15 +172,30 @@ def main():
         foto = str(r.get("foto") or "").strip()
         if not re.match(r"^https://[^\s\"'<>]+$", foto):
             foto = primera_extra.get(str(r.get("id")), "")
-        imagen = foto or imagen_general
+        d = os.path.join(carpeta, codigo)
+        os.makedirs(d, exist_ok=True)
+        imagen, medidas = foto or imagen_general, None
+        if o.copiar_fotos:
+            imagen, archivo = imagen_general, os.path.join(d, "foto.jpg")
+            previo = fotos_copiadas.get(codigo) or {}
+            if foto and previo.get("origen") == foto and os.path.isfile(archivo):
+                medidas = tuple(previo.get("medidas") or ()) or None
+            elif foto:
+                medidas = preparar_foto(foto, archivo)
+                if medidas: nuevas_fotos += 1
+            if foto and medidas and os.path.isfile(archivo):
+                version = hashlib.sha1(open(archivo, "rb").read()).hexdigest()[:10]
+                imagen = base + "p/" + codigo + "/foto.jpg?v=" + version
+                fotos_copiadas[codigo] = {"origen": foto, "medidas": list(medidas)}
+            else:
+                fotos_copiadas.pop(codigo, None)
+                if os.path.isfile(archivo): os.remove(archivo)
         p = {"codigo": codigo, "nombre": nombre, "precio": precio if precio > 0 else None,
              "disponible": r.get("disponible") is True}
         url_ficha = base + "p/" + codigo + "/" + o.pagina
         destino = base + o.pagina + "?p=" + codigo
-        d = os.path.join(carpeta, codigo)
-        os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as f:
-            f.write(pagina(p, url_ficha, destino, imagen))
+            f.write(pagina(p, url_ficha, destino, imagen, medidas))
         hechos.add(codigo)
 
     # Quitar páginas de productos que ya no están publicados (solo las generadas por este script)
@@ -148,15 +205,19 @@ def main():
         if nombre in hechos or not os.path.isfile(archivo):
             continue
         if MARCA in open(archivo, encoding="utf-8").read():
-            os.remove(archivo)
-            try: os.rmdir(os.path.join(carpeta, nombre))
-            except OSError: pass
+            shutil.rmtree(os.path.join(carpeta, nombre))
+            fotos_copiadas.pop(nombre, None)
             quitados.append(nombre)
+    if o.copiar_fotos:
+        with open(registro_fotos, "w", encoding="utf-8") as f:
+            json.dump(fotos_copiadas, f, ensure_ascii=False, indent=0, sort_keys=True)
 
     texto = [f"## Fichas para compartir", "", f"Base: {base}", "",
              f"- Páginas generadas: **{len(hechos)}** de {len(filas)} productos publicados",
              f"- Quitadas (producto ya no publicado): {len(quitados)}" + (f" ({', '.join(quitados)})" if quitados else ""),
              f"- Sin página propia (se comparten con ?p=): {len(omitidos)}"]
+    if o.copiar_fotos:
+        texto.append(f"- Fotos para la vista previa: {len(fotos_copiadas)} en el dominio de la tienda ({nuevas_fotos} nuevas o cambiadas)")
     texto += [f"  - {x}" for x in omitidos]
     print("\n".join(texto))
     if o.resumen:
