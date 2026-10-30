@@ -477,3 +477,23 @@ body.lbx-open .ficha{overflow:hidden}
 }
 .lbx-err{color:#a9a6b0;font-size:14px}
 .f-share-test{margin:8px 0 0;padding:6px 10px;border-radius:8px;background:#fff1d6;color:#8a5a00;font-size:12px}
+
+/* ---------- Elegir WhatsApp para enviar el pedido ---------- */
+.wa-pick{position:fixed;inset:0;z-index:95;display:flex;align-items:flex-end;justify-content:center;padding:0 max(0px, env(safe-area-inset-right, 0px)) 0 max(0px, env(safe-area-inset-left, 0px));background:rgba(8,8,8,.6)}
+.wa-pick[hidden]{display:none}
+.wa-pick-box{width:100%;max-width:440px;display:grid;gap:12px;padding:20px 16px calc(16px + env(safe-area-inset-bottom, 0px));border-radius:18px 18px 0 0;background:#fff;color:var(--text);box-shadow:0 -10px 30px rgba(0,0,0,.25)}
+.wa-pick-box h2{margin:0;font-size:18px;line-height:1.25;text-wrap:balance}
+.wa-pick-box p{margin:0;color:var(--muted);font-size:13.5px}
+.wa-pick-ops{display:grid;gap:10px}
+.wa-op{display:flex;align-items:center;gap:12px;min-height:64px;padding:10px 14px;border:2px solid var(--ink);border-radius:14px;background:var(--ink);color:#fff;text-decoration:none}
+.wa-op svg{flex:none;width:30px;height:30px;color:var(--wa)}
+.wa-op span{display:flex;flex-direction:column;gap:2px;min-width:0}
+.wa-op b{font-size:16px;color:var(--gold)}
+.wa-op small{font-size:15px;font-weight:700;letter-spacing:.3px;font-variant-numeric:tabular-nums}
+.wa-op:hover{border-color:var(--gold)}
+.wa-op:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.wa-pick-x{width:100%;min-height:44px;font-size:14px}
+@media (min-width:651px){
+  .wa-pick{align-items:center}
+  .wa-pick-box{border-radius:18px;padding-bottom:20px}
+}
