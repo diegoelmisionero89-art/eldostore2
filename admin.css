@@ -186,3 +186,10 @@ body.modo-cuentas .sin-cuentas{display:none !important}
 .cuenta-filas div{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:.88rem}
 .cuenta-filas span{color:var(--muted)}
 .cuenta-filas .destacado strong{color:var(--gold)}
+
+/* Fotos adicionales del producto (galería de la ficha) */
+.fotos-extra{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.foto-extra{display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid var(--line);border-radius:8px}
+.foto-extra img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#fff;border-radius:6px}
+.foto-extra-acc{display:flex;gap:4px}
+.foto-extra-acc .btn{flex:1;padding:4px 0;min-width:0}

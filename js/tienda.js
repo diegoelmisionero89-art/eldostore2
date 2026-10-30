@@ -10,6 +10,11 @@
      con el identificador y la cantidad. Los precios se toman siempre del
      catálogo recién cargado.
    - Este archivo lo usa SOLO index.html. El panel administrativo no lo carga.
+   - Galería: además de foto, lee las fotos adicionales con fotos_tienda()
+     (migración 004). Si esa función no existe todavía, cada producto muestra
+     solo su foto principal, como antes.
+   - Enlace para compartir una ficha: ?p=<código> (o el id si el código se
+     repite). Al abrirlo, se muestra directamente la ficha de ese producto.
    ========================================================================== */
 (function () {
   "use strict";
@@ -34,6 +39,8 @@
   const limpiar = (v, max) => String(v == null ? "" : v).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
   const numeroWhatsApp = () => { const n = String(CFG.whatsapp || "").replace(/\D/g, ""); return n.length >= 10 && n.length <= 15 ? n : ""; };
   const WA_SVG = $("#waFab svg") ? $("#waFab svg").outerHTML : "";
+  const ICONO_FB = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.5 21v-7.5h2.6l.4-3h-3V8.6c0-.9.3-1.5 1.5-1.5h1.6V4.4c-.3 0-1.2-.1-2.3-.1-2.3 0-3.8 1.4-3.8 3.9v2.3H8v3h2.5V21h3z"/></svg>';
+  const ICONO_IG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.3" cy="6.7" r="1" fill="currentColor" stroke="none"/></svg>';
 
   /* ---------- Íconos de categorías (se eligen por el nombre real) ---------- */
   const I = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -96,9 +103,17 @@
         precio: Number.isFinite(precio) && precio > 0 ? Math.round(precio) : null,
         precioAnterior: Number.isFinite(anterior) && anterior > 0 ? Math.round(anterior) : null,
         disponible: !!(r && r.disponible === true),
-        foto: fotoValida(r && r.foto)
+        foto: fotoValida(r && r.foto),
+        id: r && r.id != null ? String(r.id) : "",
+        // Código interno tal como está en products.codigo (texto: conserva los ceros iniciales).
+        codigo: r && r.codigo != null ? String(r.codigo).replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 60) : ""
       };
     });
+    for (const p of productos) p.fotos = p.foto ? [p.foto] : [];
+    // Códigos repetidos: esos productos se comparten con su id
+    const usos = new Map();
+    for (const p of productos) if (p.codigo) usos.set(p.codigo, (usos.get(p.codigo) || 0) + 1);
+    for (const p of productos) p.codigoUnico = !!p.codigo && usos.get(p.codigo) === 1;
 
     // Diagnóstico para el dueño (consola del navegador): qué campos devuelve la función.
     try {
@@ -109,15 +124,40 @@
     return productos;
   }
 
-  async function cargarCatalogo() {
+  let clienteSb = null;
+  function cliente() {
     if (!window.supabase || typeof window.supabase.createClient !== "function") {
       const err = new Error("No se pudo cargar la librería de Supabase");
       err.tipo = "libreria"; throw err;
     }
-    const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey);
+    if (!clienteSb) clienteSb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey);
+    return clienteSb;
+  }
+  async function cargarCatalogo() {
+    const sb = cliente();
     const { data, error } = await sb.rpc("catalogo_tienda");
     if (error) { const err = new Error(error.message || "Error de catalogo_tienda"); err.tipo = "rpc"; throw err; }
     return data || [];
+  }
+
+  /* Fotos adicionales (migración 004). Cualquier problema → solo la foto principal. */
+  const MAX_FOTOS = 12;
+  async function cargarFotosExtra() {
+    try {
+      const { data, error } = await cliente().rpc("fotos_tienda");
+      if (error) { console.info("[ELDOSTORE] fotos_tienda() no disponible: se muestra solo la foto principal."); return []; }
+      return Array.isArray(data) ? data : [];
+    } catch (e) { return []; }
+  }
+  function aplicarFotosExtra(productos, filas) {
+    const porId = new Map(productos.filter(p => p.id).map(p => [p.id, p]));
+    for (const f of filas) {
+      const p = f && porId.get(String(f.producto_id));
+      const url = fotoValida(f && f.url);
+      if (p && url && !p.fotos.includes(url) && p.fotos.length < MAX_FOTOS) p.fotos.push(url);
+    }
+    // Sin foto principal pero con adicionales: la primera hace de principal
+    for (const p of productos) if (!p.foto && p.fotos.length) p.foto = p.fotos[0];
   }
 
   /* ---------- Carrito ---------- */
@@ -175,6 +215,20 @@
 
   const PREFIJO_FICHA = "#producto/";
   const enlaceFicha = p => esc(PREFIJO_FICHA + encodeURIComponent(p.clave));
+  // Dirección completa para compartir: abre directamente la ficha de este producto.
+  function enlaceCompartir(p) {
+    const base = location.origin + location.pathname;
+    if (p.codigoUnico) return base + "?p=" + encodeURIComponent(p.codigo);
+    if (p.id) return base + "?p=" + encodeURIComponent(p.id);
+    return base + PREFIJO_FICHA + encodeURIComponent(p.clave);
+  }
+  function mensajeProducto(p, inicio, conEnlace) {
+    const r = [inicio, "", "Producto: " + p.nombre];
+    if (p.codigo) r.push("Código: " + p.codigo);
+    r.push("Precio: " + (p.precio ? money(p.precio) : "a consultar"));
+    if (conEnlace) r.push("Enlace: " + enlaceCompartir(p));
+    return r.join("\n");
+  }
 
   function filtrados() {
     const t = norm(estado.texto);
@@ -495,7 +549,18 @@
       : (!p.precio ? '<span class="stock na">Precio a confirmar</span>' : '<span class="stock ok">Disponible</span>');
     const n = numeroWhatsApp();
     const consulta = n
-      ? `<a class="f-wa" href="https://wa.me/${n}?text=${encodeURIComponent("Hola ELDOSTORE, quiero consultar por: " + p.nombre + (p.precio ? " (" + money(p.precio) + ")" : ""))}" target="_blank" rel="noopener noreferrer">${WA_SVG}Consultar por WhatsApp</a>` : "";
+      ? `<a class="f-wa" href="https://wa.me/${n}?text=${encodeURIComponent(mensajeProducto(p, "Hola, me interesa este producto de ELDOSTORE:", true))}" target="_blank" rel="noopener noreferrer">${WA_SVG}Consultar por WhatsApp</a>` : "";
+    const link = enlaceCompartir(p);
+    const compartir = `<section class="f-share" aria-labelledby="fShareT">
+        <h2 id="fShareT">Compartir este producto</h2>
+        <div class="f-share-row">
+          <a class="sh sh-wa" href="https://wa.me/?text=${encodeURIComponent(mensajeProducto(p, "Mirá este producto de ELDOSTORE:", true))}" target="_blank" rel="noopener noreferrer">${WA_SVG}<span>WhatsApp</span></a>
+          <a class="sh sh-fb" href="https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(link)}" target="_blank" rel="noopener noreferrer">${ICONO_FB}<span>Facebook</span></a>
+          <button type="button" class="sh sh-ig" data-f="copiar">${ICONO_IG}<span>Instagram</span></button>
+        </div>
+        <p class="f-share-help">Para Instagram, tocá el botón: se copia el enlace del producto y lo pegás en tu historia, mensaje o publicación.</p>
+        <input class="f-link" type="text" readonly value="${esc(link)}" aria-label="Enlace del producto">
+      </section>`;
     const compra = ok
       ? `<div class="f-buy">
            <div class="qty" role="group" aria-label="Cantidad">
@@ -516,10 +581,11 @@
       </section>` : "";
     ficha.innerHTML = barra + `<div class="f-wrap">
         <div class="f-main">
-          <div class="f-photo${p.disponible ? "" : " is-off"}">${!p.disponible ? '<span class="tag grey">Sin stock</span>' : (oferta ? `<span class="tag red">${Math.round((1 - p.precio / p.precioAnterior) * 100)}% OFF</span>` : "")}${p.foto ? `<img src="${esc(p.foto)}" alt="${esc(p.nombre)}" decoding="async">` : '<span class="ph">ELDOSTORE</span>'}</div>
+          ${galeriaHTML(p, !p.disponible ? '<span class="tag grey">Sin stock</span>' : (oferta ? `<span class="tag red">${Math.round((1 - p.precio / p.precioAnterior) * 100)}% OFF</span>` : ""))}
           <div class="f-info">
             ${p.categoria ? `<p class="cat-lbl">${esc(p.categoria)}</p>` : ""}
             <h1 class="f-name" id="fName" tabindex="-1">${esc(p.nombre)}</h1>
+            ${p.codigo ? `<p class="f-code">Código: <span>${esc(p.codigo)}</span></p>` : ""}
             ${precio}
             ${stock}
             ${compra}
@@ -529,16 +595,155 @@
               <li>Coordinamos disponibilidad, pago y entrega por WhatsApp.</li>
             </ul>
             ${consulta}
+            ${compartir}
           </div>
         </div>
         ${relHTML}
       </div>`;
     document.title = p.nombre + " | ELDOSTORE";
+    ubicarFoto(false);
+  }
+
+  /* ---------- Galería de la ficha ---------- */
+  let fotoActual = 0;
+  const ICONO_ZOOM = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2M11 8v6M8 11h6"/></svg>';
+  const FLECHA = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+  function galeriaHTML(p, tag) {
+    const fotos = p.fotos;
+    const varias = fotos.length > 1;
+    if (fotoActual >= fotos.length) fotoActual = 0;
+    if (!fotos.length) return `<div class="f-gal"><div class="f-photo${p.disponible ? "" : " is-off"}">${tag}<span class="ph">ELDOSTORE</span></div></div>`;
+    return `<div class="f-gal">
+      <div class="f-photo${p.disponible ? "" : " is-off"}">${tag}
+        <div class="f-track" tabindex="0" aria-label="Fotos de ${esc(p.nombre)}${varias ? ": deslizá para ver más" : ""}">
+          ${fotos.map((u, i) => `<div class="f-slide"><img src="${esc(u)}" alt="${esc(p.nombre)}${varias ? ", foto " + (i + 1) + " de " + fotos.length : ""}" decoding="async" ${i ? 'loading="lazy"' : ""} data-g="ampliar" data-i="${i}"></div>`).join("")}
+        </div>
+        ${varias ? `<button type="button" class="f-nav prev" data-g="prev" aria-label="Foto anterior">${FLECHA("M15 5l-7 7 7 7")}</button>
+        <button type="button" class="f-nav next" data-g="next" aria-label="Foto siguiente">${FLECHA("M9 5l7 7-7 7")}</button>
+        <span class="f-count" aria-hidden="true"><b>${fotoActual + 1}</b> / ${fotos.length}</span>` : ""}
+        <button type="button" class="f-zoom" data-g="ampliar" aria-label="Ampliar foto">${ICONO_ZOOM}</button>
+      </div>
+      ${varias ? `<div class="f-thumbs" aria-label="Elegir foto">${fotos.map((u, i) => `<button type="button" class="f-th" data-g="ver" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === fotoActual}"><img src="${esc(u)}" alt="" loading="lazy" decoding="async"></button>`).join("")}</div>` : ""}
+    </div>`;
+  }
+  const pista = () => ficha.querySelector(".f-track");
+  function ubicarFoto(suave) {
+    const t = pista(); if (!t) return;
+    const reducir = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    t.scrollTo({ left: fotoActual * t.clientWidth, behavior: suave && !reducir ? "smooth" : "auto" });
+    marcarFoto();
+  }
+  function marcarFoto() {
+    const c = ficha.querySelector(".f-count b"); if (c) c.textContent = fotoActual + 1;
+    ficha.querySelectorAll(".f-th").forEach((b, i) => {
+      b.setAttribute("aria-current", String(i === fotoActual));
+      if (i === fotoActual && b.parentElement.scrollWidth > b.parentElement.clientWidth)
+        b.parentElement.scrollTo({ left: b.offsetLeft - b.parentElement.clientWidth / 2 + b.clientWidth / 2, behavior: "auto" });
+    });
+  }
+  // Al deslizar con el dedo se actualizan el contador y las miniaturas
+  ficha.addEventListener("scroll", e => {
+    const t = e.target;
+    if (!(t instanceof Element) || !t.classList.contains("f-track")) return;
+    const i = Math.round(t.scrollLeft / Math.max(1, t.clientWidth));
+    if (i !== fotoActual) { fotoActual = i; marcarFoto(); }
+  }, true);
+  window.addEventListener("resize", () => { if (!ficha.hidden) ubicarFoto(false); });
+
+  /* Vista ampliada: pantalla completa, deslizable; tocar la foto la agranda
+     al doble y se recorre arrastrando. Se cierra con ×, Escape o Atrás. */
+  const visor = document.createElement("div");
+  visor.className = "lbx"; visor.hidden = true;
+  visor.setAttribute("role", "dialog"); visor.setAttribute("aria-modal", "true"); visor.setAttribute("aria-label", "Foto ampliada");
+  document.body.appendChild(visor);
+  let visorFoco = null;
+  function abrirVisor() {
+    const p = porClave.get(fichaClave); if (!p || !p.fotos.length) return;
+    const varias = p.fotos.length > 1;
+    visor.innerHTML = `<div class="lbx-track">${p.fotos.map((u, i) => `<div class="lbx-slide"><div class="lbx-zoom"><img src="${esc(u)}" alt="${esc(p.nombre)}${varias ? ", foto " + (i + 1) + " de " + p.fotos.length : ""}" decoding="async"></div></div>`).join("")}</div>
+      <button type="button" class="lbx-close" data-v="cerrar" aria-label="Cerrar foto ampliada">×</button>
+      ${varias ? `<button type="button" class="lbx-nav prev" data-v="prev" aria-label="Foto anterior">${FLECHA("M15 5l-7 7 7 7")}</button>
+      <button type="button" class="lbx-nav next" data-v="next" aria-label="Foto siguiente">${FLECHA("M9 5l7 7-7 7")}</button>
+      <span class="lbx-count"><b>${fotoActual + 1}</b> / ${p.fotos.length}</span>` : ""}
+      <p class="lbx-help">Tocá la foto para acercar</p>`;
+    visorFoco = document.activeElement;
+    visor.hidden = false;
+    document.body.classList.add("lbx-open");
+    const t = visor.querySelector(".lbx-track");
+    t.scrollLeft = fotoActual * t.clientWidth;
+    history.pushState({ eldoVisor: true }, "", location.href);
+    visor.querySelector(".lbx-close").focus({ preventScroll: true });
+  }
+  function cerrarVisor(desdeHistorial) {
+    if (visor.hidden) return;
+    visor.hidden = true; visor.innerHTML = "";
+    document.body.classList.remove("lbx-open");
+    ubicarFoto(false);
+    if (!desdeHistorial && history.state && history.state.eldoVisor) history.back();
+    if (visorFoco && document.body.contains(visorFoco)) visorFoco.focus({ preventScroll: true });
+  }
+  window.addEventListener("popstate", () => { if (!visor.hidden) cerrarVisor(true); });
+  function moverVisor(d) {
+    const t = visor.querySelector(".lbx-track"); if (!t) return;
+    const n = t.children.length;
+    const i = Math.max(0, Math.min(n - 1, Math.round(t.scrollLeft / t.clientWidth) + d));
+    visor.querySelectorAll(".lbx-zoom.on").forEach(z => z.classList.remove("on"));
+    t.classList.remove("zoomed");
+    t.scrollTo({ left: i * t.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+  visor.addEventListener("scroll", e => {
+    const t = e.target;
+    if (!(t instanceof Element) || !t.classList.contains("lbx-track")) return;
+    const i = Math.round(t.scrollLeft / Math.max(1, t.clientWidth));
+    if (i !== fotoActual) { fotoActual = i; const c = visor.querySelector(".lbx-count b"); if (c) c.textContent = i + 1; }
+  }, true);
+  visor.addEventListener("click", e => {
+    const b = e.target.closest("[data-v]");
+    if (b) {
+      if (b.dataset.v === "cerrar") cerrarVisor(false);
+      if (b.dataset.v === "prev") moverVisor(-1);
+      if (b.dataset.v === "next") moverVisor(1);
+      return;
+    }
+    const img = e.target.closest(".lbx-zoom img");
+    if (!img) return;
+    const z = img.parentElement, t = visor.querySelector(".lbx-track");
+    const r = img.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+    const on = !z.classList.contains("on");
+    z.classList.toggle("on", on);
+    t.classList.toggle("zoomed", on);
+    visor.querySelector(".lbx-help").textContent = on ? "Arrastrá para recorrer · tocá para alejar" : "Tocá la foto para acercar";
+    if (on) requestAnimationFrame(() => {
+      z.scrollLeft = fx * z.scrollWidth - z.clientWidth / 2;
+      z.scrollTop = fy * z.scrollHeight - z.clientHeight / 2;
+    });
+  });
+  visor.addEventListener("keydown", e => {
+    if (e.key === "ArrowLeft") moverVisor(-1);
+    if (e.key === "ArrowRight") moverVisor(1);
+    if (e.key === "Tab") { // mantener el foco dentro del visor
+      const f = Array.from(visor.querySelectorAll("button")); if (!f.length) return;
+      const i = f.indexOf(document.activeElement);
+      if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+    }
+  });
+
+  async function copiarEnlace() {
+    const inp = ficha.querySelector(".f-link"); if (!inp) return;
+    try {
+      await navigator.clipboard.writeText(inp.value);
+      toast("<b>Enlace copiado.</b> Pegalo en Instagram: historia, mensaje o publicación.");
+    } catch (e) {
+      inp.classList.add("on"); inp.focus(); inp.select();
+      toast("Seleccioné el enlace: copialo con el menú de tu teléfono.");
+    }
   }
 
   function mostrarFicha(clave) {
     const cambio = clave !== fichaClave;
-    if (cambio) fichaQty = 1;
+    if (cambio) { fichaQty = 1; fotoActual = 0; }
     if (ficha.hidden) {
       const a = document.activeElement;
       focoFicha = a && a !== document.body ? a : null;
@@ -554,6 +759,7 @@
   }
   function ocultarFicha() {
     if (ficha.hidden) return;
+    cerrarVisor(true);
     ficha.hidden = true; ficha.innerHTML = ""; fichaClave = null;
     document.body.classList.remove("ficha-open");
     if (!abierto) document.documentElement.classList.remove("lock");
@@ -566,6 +772,17 @@
     const h = location.hash;
     if (!h.startsWith(PREFIJO_FICHA)) return null;
     try { return decodeURIComponent(h.slice(PREFIJO_FICHA.length)); } catch (e) { return ""; }
+  }
+  // Enlace compartido (?p=código o ?p=id): se convierte en la ficha #producto/… sin recargar.
+  function resolverEnlaceCompartido() {
+    let params;
+    try { params = new URLSearchParams(location.search); } catch (e) { return; }
+    const v = params.get("p");
+    if (v === null) return;
+    params.delete("p");
+    const p = PRODUCTOS.find(x => x.codigoUnico && x.codigo === v) || PRODUCTOS.find(x => x.id && x.id === v);
+    const qs = params.toString();
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + PREFIJO_FICHA + encodeURIComponent(p ? p.clave : "no-encontrado:" + v));
   }
   function enrutar() {
     if (!catalogoListo) return;
@@ -585,7 +802,17 @@
   }, true);
 
   ficha.addEventListener("click", e => {
+    const g = e.target.closest("[data-g]");
+    if (g) {
+      const p = porClave.get(fichaClave); const n = p ? p.fotos.length : 0;
+      if (g.dataset.g === "ver") { fotoActual = Number(g.dataset.i) || 0; ubicarFoto(true); }
+      if (g.dataset.g === "prev") { fotoActual = (fotoActual - 1 + n) % n; ubicarFoto(true); }
+      if (g.dataset.g === "next") { fotoActual = (fotoActual + 1) % n; ubicarFoto(true); }
+      if (g.dataset.g === "ampliar") abrirVisor();
+      return;
+    }
     const b = e.target.closest("[data-f]"); if (!b) return;
+    if (b.dataset.f === "copiar") { copiarEnlace(); return; }
     const p = porClave.get(fichaClave);
     switch (b.dataset.f) {
       case "volver": volverAlCatalogo(); return;
@@ -610,6 +837,11 @@
   ficha.addEventListener("error", e => {
     if (e.target.tagName !== "IMG") return;
     const s = document.createElement("span"); s.className = "ph"; s.textContent = e.target.closest(".f-mini") ? "" : "ELDOSTORE"; e.target.replaceWith(s);
+  }, true);
+
+  visor.addEventListener("error", e => {
+    if (e.target.tagName !== "IMG") return;
+    const s = document.createElement("span"); s.className = "lbx-err"; s.textContent = "No se pudo cargar la foto"; e.target.replaceWith(s);
   }, true);
 
   $("#items").addEventListener("error", e => {
@@ -653,6 +885,7 @@
   document.addEventListener("click", e => { const c = e.target.closest("[data-close]"); if (c) cerrar(!c.closest("a")); });
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape") return;
+    if (!visor.hidden) { cerrarVisor(false); return; }
     if (abierto) { cerrar(); return; }
     if (!ficha.hidden) volverAlCatalogo();
   });
@@ -705,14 +938,16 @@
     g.setAttribute("aria-busy", "true");
     g.innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div><div class="skel"></div>';
     try {
-      const filas = await cargarCatalogo();
+      const [filas, extras] = await Promise.all([cargarCatalogo(), cargarFotosExtra()]);
       PRODUCTOS = prepararCatalogo(filas);
+      aplicarFotosExtra(PRODUCTOS, extras);
       porClave = new Map(PRODUCTOS.map(p => [p.clave, p]));
       carrito = leerCarrito();
       conciliarCarrito();
       dibujarCategorias();
       actualizarTodo();
       catalogoListo = true;
+      resolverEnlaceCompartido();
       enrutar();
     } catch (err) {
       console.error("Error al cargar el catálogo:", err);

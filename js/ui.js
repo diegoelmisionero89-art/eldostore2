@@ -297,6 +297,13 @@ function openProductModal(id) {
           <input type="file" id="f_foto" accept="image/jpeg,image/png,image/webp">
           <small>Formatos permitidos: JPG, PNG y WebP. Máximo 5 MB.</small>
         </div>
+        <div class="field" id="f_fotosExtraBox">
+          <label>Fotos adicionales (galería de la ficha)</label>
+          ${p ? `<div id="f_fotosExtra"><small>Cargando fotos…</small></div>
+            <input type="file" id="f_fotosNuevas" accept="image/jpeg,image/png,image/webp" multiple onchange="agregarFotosExtra('${p.id}')" style="margin-top:8px">
+            <small>Se agregan al elegirlas, sin tocar Guardar. La foto de arriba sigue siendo la principal.</small>`
+          : '<small>Guardá el producto primero; al editarlo vas a poder agregar fotos adicionales.</small>'}
+        </div>
 
     <div class="two-col">
       <div class="field"><label>Costo</label><input type="number" id="f_costo" value="${p ? p.costo : ''}"></div>
@@ -311,6 +318,90 @@ function openProductModal(id) {
       <button class="btn btn-primary btn-sm" id="saveProductBtn" onclick="saveProduct('${p ? p.id : ''}')">Guardar</button>
     </div>
   `);
+  if (p) renderFotosExtra(p.id);
+}
+
+/* ------- Fotos adicionales del producto (galería de la ficha, migración 004) ------- */
+async function renderFotosExtra(productId) {
+  const box = document.getElementById('f_fotosExtra');
+  if (!box) return;
+  let lista;
+  try { lista = await listarFotosProducto(productId); }
+  catch (e) { box.innerHTML = `<small style="color:var(--red)">No se pudieron leer las fotos: ${esc(e.message)}</small>`; return; }
+  const input = document.getElementById('f_fotosNuevas');
+  if (lista === null) {
+    box.innerHTML = '<small>Para usar fotos adicionales falta instalar la migración 004 en Supabase.</small>';
+    if (input) input.hidden = true;
+    return;
+  }
+  if (input) input.disabled = lista.length >= MAX_FOTOS_EXTRA;
+  box.innerHTML = (lista.length ? `<div class="fotos-extra">${lista.map((f, i) => `
+      <div class="foto-extra">
+        <img src="${esc(f.url)}" alt="Foto adicional ${i + 1}" loading="lazy">
+        <div class="foto-extra-acc">
+          <button type="button" class="btn btn-sm" title="Mover antes" ${i === 0 ? 'disabled' : ''} onclick="moverFotoExtra('${productId}', ${i}, -1)">↑</button>
+          <button type="button" class="btn btn-sm" title="Mover después" ${i === lista.length - 1 ? 'disabled' : ''} onclick="moverFotoExtra('${productId}', ${i}, 1)">↓</button>
+          <button type="button" class="btn btn-sm btn-danger" onclick="quitarFotoExtra('${productId}', '${f.id}')">Quitar</button>
+        </div>
+      </div>`).join('')}</div>` : '<small>Este producto todavía no tiene fotos adicionales.</small>') +
+    `<small style="display:block;margin-top:6px">${lista.length} de ${MAX_FOTOS_EXTRA} fotos adicionales.</small>`;
+  box.dataset.fotos = JSON.stringify(lista.map(f => ({ id: f.id, orden: f.orden })));
+}
+
+async function subirArchivoFotoProducto(archivo) {
+  const extension = archivo.name.split('.').pop().toLowerCase();
+  const nombreArchivo = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+  const { error } = await sb.storage.from('productos-fotos').upload(nombreArchivo, archivo, { contentType: archivo.type, upsert: false });
+  if (error) throw error;
+  return sb.storage.from('productos-fotos').getPublicUrl(nombreArchivo).data.publicUrl;
+}
+
+async function agregarFotosExtra(productId) {
+  const input = document.getElementById('f_fotosNuevas');
+  const archivos = Array.from(input.files || []);
+  input.value = '';
+  if (!archivos.length) return;
+  let lista;
+  try { lista = await listarFotosProducto(productId); } catch (e) { showError(e); return; }
+  if (lista === null) return;
+  const lugar = MAX_FOTOS_EXTRA - lista.length;
+  if (archivos.length > lugar) { showToast(`Podés agregar ${lugar} foto${lugar === 1 ? '' : 's'} más (máximo ${MAX_FOTOS_EXTRA}).`); return; }
+  for (const a of archivos) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(a.type)) { showToast(`"${a.name}" no es JPG, PNG ni WebP.`); return; }
+    if (a.size > 5 * 1024 * 1024) { showToast(`"${a.name}" supera los 5 MB.`); return; }
+  }
+  const box = document.getElementById('f_fotosExtra');
+  let orden = lista.reduce((m, f) => Math.max(m, f.orden), 0);
+  let subidas = 0;
+  try {
+    for (const a of archivos) {
+      if (box) box.insertAdjacentHTML('beforeend', `<small style="display:block">Subiendo ${esc(a.name)}…</small>`);
+      const url = await subirArchivoFotoProducto(a);
+      await agregarFotoProducto(productId, url, ++orden);
+      subidas++;
+    }
+    showToast(subidas === 1 ? 'Foto agregada.' : `${subidas} fotos agregadas.`);
+  } catch (e) { showError(e); }
+  renderFotosExtra(productId);
+}
+
+async function quitarFotoExtra(productId, fotoId) {
+  if (!confirm('¿Quitar esta foto de la galería del producto?')) return;
+  try { await quitarFotoProducto(fotoId); showToast('Foto quitada.'); } catch (e) { showError(e); }
+  renderFotosExtra(productId);
+}
+
+async function moverFotoExtra(productId, i, dir) {
+  const box = document.getElementById('f_fotosExtra');
+  const fotos = JSON.parse(box.dataset.fotos || '[]');
+  const j = i + dir;
+  if (!fotos[i] || !fotos[j]) return;
+  try {
+    // Se renumeran todas en orden 1..n con el cambio aplicado (evita órdenes repetidos)
+    const nueva = fotos.slice(); [nueva[i], nueva[j]] = [nueva[j], nueva[i]];
+    for (let k = 0; k < nueva.length; k++) if (nueva[k].orden !== k + 1) await cambiarOrdenFoto(nueva[k].id, k + 1);
+  } catch (e) { showError(e); }
+  renderFotosExtra(productId);
 }
 
 async function saveProduct(id) {

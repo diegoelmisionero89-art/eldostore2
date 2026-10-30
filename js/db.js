@@ -867,6 +867,29 @@ async function vincularUsuario(email, holderId, activo = true) {
   return r;
 }
 
+/* ------------- FOTOS ADICIONALES DE PRODUCTOS (migración 004) -------------
+   La foto principal sigue en products.foto. Estas son las demás fotos de la
+   galería de la ficha. Devuelve null si la migración 004 no está aplicada. */
+const MAX_FOTOS_EXTRA = 10;
+async function listarFotosProducto(productId) {
+  const { data, error } = await sb.from('product_fotos').select('*').eq('product_id', productId).order('orden', { ascending: true });
+  if (error) { if (esTablaInexistente(error)) return null; throw new Error(error.message); }
+  return data || [];
+}
+async function agregarFotoProducto(productId, url, orden) {
+  const { data, error } = await sb.from('product_fotos').insert({ product_id: productId, url, orden }).select().single();
+  throwIfError(error, 'agregar foto');
+  return data;
+}
+async function quitarFotoProducto(fotoId) {
+  const { error } = await sb.from('product_fotos').delete().eq('id', fotoId);
+  throwIfError(error, 'quitar foto');
+}
+async function cambiarOrdenFoto(fotoId, orden) {
+  const { error } = await sb.from('product_fotos').update({ orden }).eq('id', fotoId);
+  throwIfError(error, 'ordenar fotos');
+}
+
 /* ------------------------------- ENVÍOS ---------------------------------- */
 
 function shippingCostForKm(km) {
