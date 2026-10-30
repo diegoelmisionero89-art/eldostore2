@@ -1,0 +1,50 @@
+# ELDOSTORE — Fichas para compartir (vista previa por producto en WhatsApp y Facebook)
+#
+# Genera p/<código>/index.html con la foto, el nombre, el código y el precio de cada
+# producto publicado, leyendo SOLO catalogo_tienda() (clave publicable de index.html).
+# No escribe en Supabase. Guarda las páginas en la MISMA rama donde corre:
+#   - rama de prueba (galeria-ficha): enlaces a la versión de prueba (raw.githack.com)
+#   - main (cuando se apruebe): enlaces a https://eldostore.com.ar/ y se actualiza
+#     cada hora para seguir los cambios de precio, foto o stock.
+name: Fichas para compartir
+
+on:
+  push:
+    branches: [galeria-ficha]
+    paths: ['herramientas/generar-fichas.py', '.github/workflows/fichas-compartir.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fichas-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generar páginas
+        run: |
+          set -euo pipefail
+          rama="${GITHUB_REF_NAME}"
+          if [ "$rama" = "main" ]; then
+            base="https://eldostore.com.ar/"; pagina=""
+          else
+            base="https://raw.githack.com/${GITHUB_REPOSITORY}/${rama}/"; pagina="index.html"
+          fi
+          python3 herramientas/generar-fichas.py --base "$base" --pagina "$pagina" --resumen "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar cambios
+        run: |
+          git add -A p
+          if git diff --cached --quiet; then echo "Sin cambios en las páginas."; exit 0; fi
+          git -c user.name="ELDOSTORE bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Fichas para compartir: actualización automática"
+          git push

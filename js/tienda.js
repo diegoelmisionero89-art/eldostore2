@@ -13,8 +13,12 @@
    - Galería: además de foto, lee las fotos adicionales con fotos_tienda()
      (migración 004). Si esa función no existe todavía, cada producto muestra
      solo su foto principal, como antes.
-   - Enlace para compartir una ficha: ?p=<código> (o el id si el código se
-     repite). Al abrirlo, se muestra directamente la ficha de ese producto.
+   - Enlace para compartir una ficha: https://eldostore.com.ar/p/<código>/
+     (página con la vista previa del producto, generada por el workflow
+     "Fichas para compartir"), que lleva a ?p=<código>. Si el código tiene
+     caracteres especiales se usa ?p=<código>, y si se repite, ?p=<id>.
+     En una versión de prueba (otro dominio), los enlaces apuntan a esa
+     misma versión de prueba y nunca a la tienda oficial.
    ========================================================================== */
 (function () {
   "use strict";
@@ -24,7 +28,8 @@
     supabaseKey: "",
     whatsapp: "",
     instagram: "",
-    envioGratisDesde: 12000
+    envioGratisDesde: 12000,
+    sitioOficial: "https://eldostore.com.ar/"
   }, window.ELDOSTORE_CONFIG || {});
   const CANTIDAD_MAX = 99;
   const CLAVE_CARRITO = "eldostore_carrito_v1";
@@ -216,11 +221,21 @@
   const PREFIJO_FICHA = "#producto/";
   const enlaceFicha = p => esc(PREFIJO_FICHA + encodeURIComponent(p.clave));
   // Dirección completa para compartir: abre directamente la ficha de este producto.
+  const SITIO_OFICIAL = String(CFG.sitioOficial || "https://eldostore.com.ar/").replace(/\/*$/, "/");
+  const esSitioOficial = (() => {
+    let h = ""; try { h = new URL(SITIO_OFICIAL).hostname.replace(/^www\./, ""); } catch (e) { /* config inválida */ }
+    const actual = location.hostname.replace(/^www\./, "");
+    return (!!h && actual === h) || /\.github\.io$/.test(actual); // github.io redirige al dominio oficial
+  })();
+  // Raíz para los enlaces: el dominio oficial en producción; esta misma versión en una prueba.
+  const RAIZ = esSitioOficial ? SITIO_OFICIAL : location.origin + location.pathname.replace(/[^/]*$/, "");
+  const PAGINA = esSitioOficial ? "" : "index.html";
+  const codigoEnRuta = c => /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(c);
   function enlaceCompartir(p) {
-    const base = location.origin + location.pathname;
-    if (p.codigoUnico) return base + "?p=" + encodeURIComponent(p.codigo);
-    if (p.id) return base + "?p=" + encodeURIComponent(p.id);
-    return base + PREFIJO_FICHA + encodeURIComponent(p.clave);
+    if (p.codigoUnico && codigoEnRuta(p.codigo)) return RAIZ + "p/" + p.codigo + "/" + PAGINA;
+    if (p.codigoUnico) return RAIZ + PAGINA + "?p=" + encodeURIComponent(p.codigo);
+    if (p.id) return RAIZ + PAGINA + "?p=" + encodeURIComponent(p.id);
+    return RAIZ + PAGINA + PREFIJO_FICHA + encodeURIComponent(p.clave);
   }
   function mensajeProducto(p, inicio, conEnlace) {
     const r = [inicio, "", "Producto: " + p.nombre];
@@ -560,6 +575,7 @@
         </div>
         <p class="f-share-help">Para Instagram, tocá el botón: se copia el enlace del producto y lo pegás en tu historia, mensaje o publicación.</p>
         <input class="f-link" type="text" readonly value="${esc(link)}" aria-label="Enlace del producto">
+        ${esSitioOficial ? "" : `<p class="f-share-test">Versión de prueba: estos enlaces abren esta versión de prueba, no la tienda oficial.</p>`}
       </section>`;
     const compra = ok
       ? `<div class="f-buy">
