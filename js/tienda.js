@@ -343,7 +343,13 @@
     const nombre = limpiar($("#fNombre").value, 60);
     const zona = limpiar($("#fZona").value, 80);
     const r = ["Hola ELDOSTORE, quiero hacer este pedido:", ""];
-    for (const l of ls) r.push(`• ${l.q} × ${l.p.nombre} — ${money(l.sub)} (${money(l.p.precio)} c/u)`);
+    // Cada producto: nombre, código (tal como está en products.codigo) y cantidad, subtotal y precio unitario
+    ls.forEach((l, i) => {
+      if (i) r.push("");
+      r.push(`${l.q} × ${l.p.nombre}`);
+      if (l.p.codigo) r.push(`Código: ${l.p.codigo}`);
+      r.push(`— ${money(l.sub)} (${money(l.p.precio)} c/u)`);
+    });
     r.push("", `Total estimado: ${money(total)} (sin envío)`);
     if (nombre) r.push(`Nombre: ${nombre}`);
     if (zona) r.push(`Zona o localidad: ${zona}`);
