@@ -41,6 +41,11 @@
 --     dentro. Los permisos originales se guardan para la reversión.
 --
 -- Cómo correrla: SQL Editor → pegar TODO el archivo → Run.
+-- ANTES DE TOCAR RUN: bajá hasta el final del editor. La última línea tiene que ser
+--   -- FIN DEL ARCHIVO V003
+-- Si no la ves, el pegado quedó incompleto (da "syntax error at end of input"): no lo
+-- ejecutes, borrá y volvé a pegar. Un pegado incompleto nunca llega al COMMIT, así que
+-- no cambia nada en la base.
 -- Después: control posterior (compara los totales con los guardados) e invariantes.
 -- Reversión: data/migracion-003-revertir.sql
 -- =============================================================================
@@ -1135,3 +1140,9 @@ end
 $control$;
 
 commit;
+
+-- Si llegaste hasta acá sin errores, la migración quedó aplicada.
+select 'V003 instalada correctamente' as resultado,
+       (select count(*) from public.accounts) as cuentas,
+       (select count(*) from public.app_users where es_admin) as administradores;
+-- FIN DEL ARCHIVO V003
