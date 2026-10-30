@@ -1,9 +1,12 @@
 # ELDOSTORE — Respaldo integral de la base Supabase (manual)
 #
-# Hace el volcado completo que recomienda Supabase para el plan Free
-# (supabase db dump: roles, estructura y datos, incluido auth), lo CIFRA con una
-# clave tuya y lo guarda como archivo descargable del workflow durante 90 días.
-# No cambia nada en la base: solo lee.
+# Hace el volcado que recomienda Supabase para el plan Free (supabase db dump:
+# roles, estructura y datos) y además respalda aparte los usuarios de Auth
+# (auth.users y auth.identities: estructura y datos, con pg_dump). Verifica que
+# estén public.products, public.sales y auth.users comparando con la base en vivo:
+# si falta algo, FALLA y no guarda nada. Si está completo, lo CIFRA con una clave
+# tuya y lo guarda 90 días. No cambia nada en la base: solo lee.
+# NO incluye los archivos de Storage (fotos): Supabase no los guarda en la base.
 #
 # Se usa desde GitHub (también desde el iPhone): Actions → "Respaldo Supabase" →
 # Run workflow. Necesita dos secretos del repositorio (Settings → Secrets and
@@ -18,6 +21,9 @@
 # Para restaurar (solo en caso de desastre, desde una computadora):
 #   gpg -d eldostore-respaldo-*.tar.gz.gpg | tar xz
 #   y seguir "Restore" en https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore
+#   (roles.sql, schema.sql, data.sql). Si data.sql no trae auth.users, cargar después
+#   auth-datos.sql con: SET session_replication_role = replica; (auth-estructura.sql
+#   es de referencia: un proyecto nuevo de Supabase ya trae esas tablas).
 
 name: Respaldo Supabase
 
@@ -58,23 +64,74 @@ jobs:
             -x "storage.buckets_vectors" -x "storage.vector_indexes"
           date -u +"%Y-%m-%dT%H:%M:%SZ" > respaldo/fecha.txt
 
-      - name: Resumen (cantidades, sin datos)
+      # supabase db dump excluye el esquema auth de la estructura y su documentación no
+      # garantiza que incluya sus datos: por eso los usuarios se respaldan aparte, con
+      # pg_dump directo (estructura + datos de auth.users y auth.identities).
+      - name: Volcar usuarios de Auth (solo lectura)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
+          set -euo pipefail
+          pg() { docker run --rm --network host -e DB_URL postgres:17 sh -c "$1"; }
+          pg 'pg_dump "$DB_URL" --schema-only --no-owner --no-privileges -t auth.users -t auth.identities' > respaldo/auth-estructura.sql
+          pg 'pg_dump "$DB_URL" --data-only -t auth.users -t auth.identities' > respaldo/auth-datos.sql
+          # Conteo en vivo para comparar con lo volcado (no muestra datos)
+          pg 'psql "$DB_URL" -XAtc "select (select count(*) from public.products), (select count(*) from public.sales), (select count(*) from auth.users)"' > respaldo/conteo-en-vivo.txt
+
+      - name: Verificar que el respaldo esté completo
+        run: |
+          set -uo pipefail
+          # Filas de una tabla dentro de un volcado con COPY (-1 = la tabla no está)
+          filas() { awk -v t="$2" 'BEGIN{n=-1} /^COPY /{x=$2; gsub(/"/,"",x); dentro=(x==t); if(dentro) n=0; next} dentro && /^\\\.$/{dentro=0; next} dentro{n++} END{print n}' "$1"; }
+          IFS='|' read -r vivo_prod vivo_ventas vivo_usuarios < respaldo/conteo-en-vivo.txt
+          prod=$(filas respaldo/data.sql public.products)
+          ventas=$(filas respaldo/data.sql public.sales)
+          usuarios=$(filas respaldo/auth-datos.sql auth.users)
+          identidades=$(filas respaldo/auth-datos.sql auth.identities)
+          usuarios_cli=$(filas respaldo/data.sql auth.users)
+          grep -q 'CREATE TABLE auth.users' respaldo/auth-estructura.sql && estructura=sí || estructura=no
+          si() { [ "$1" -ge 0 ] && echo "$1 filas" || echo "NO INCLUIDO"; }
+          fallas=()
+          [ "$prod" -ge 1 ] && [ "$prod" = "$vivo_prod" ] || fallas+=("public.products: en el respaldo $(si "$prod"), en la base $vivo_prod filas")
+          [ "$ventas" -ge 0 ] && [ "$ventas" = "$vivo_ventas" ] || fallas+=("public.sales: en el respaldo $(si "$ventas"), en la base $vivo_ventas filas")
+          [ "$usuarios" -ge 1 ] && [ "$usuarios" = "$vivo_usuarios" ] || fallas+=("auth.users: en el respaldo $(si "$usuarios"), en la base $vivo_usuarios filas")
+          [ "$estructura" = sí ] || fallas+=("auth.users: falta la estructura (CREATE TABLE)")
+          [ -s respaldo/schema.sql ] || fallas+=("schema.sql vacío")
+          [ -s respaldo/roles.sql ] || fallas+=("roles.sql vacío")
           {
             echo "## Respaldo ELDOSTORE"
             echo ""
             echo "Fecha (UTC): $(cat respaldo/fecha.txt)"
             echo ""
-            echo "| Archivo | Tamaño |"
-            echo "|---|---|"
-            for f in roles.sql schema.sql data.sql; do echo "| $f | $(du -h respaldo/$f | cut -f1) |"; done
+            echo "| Elemento obligatorio | En el respaldo | En la base ahora |"
+            echo "|---|---|---|"
+            echo "| public.products | $(si "$prod") | $vivo_prod |"
+            echo "| public.sales | $(si "$ventas") | $vivo_ventas |"
+            echo "| auth.users (datos) | $(si "$usuarios") | $vivo_usuarios |"
+            echo "| auth.users (estructura) | $estructura | |"
+            echo "| auth.identities | $(si "$identidades") | |"
+            echo ""
+            echo "Informativo: el volcado de Supabase CLI (data.sql) $( [ "$usuarios_cli" -ge 0 ] && echo "también incluye auth.users ($usuarios_cli filas)" || echo "NO incluye auth.users; por eso se respaldan aparte")."
+            echo ""
+            echo "**No incluido:** los archivos de Storage (fotos del bucket productos-fotos). Supabase no los guarda en la base; se respaldan aparte descargándolos desde Storage. Tampoco las sesiones abiertas: después de una restauración, cada usuario vuelve a iniciar sesión."
+            echo ""
+            if [ ${#fallas[@]} -eq 0 ]; then
+              echo "### ✅ RESPALDO COMPLETO de la base (sin archivos de Storage)"
+            else
+              echo "### ❌ RESPALDO INCOMPLETO: NO usar este respaldo y NO migrar"
+              for f in "${fallas[@]}"; do echo "- $f"; done
+            fi
             echo ""
             echo "| Tabla | Filas respaldadas |"
             echo "|---|---|"
-            awk '/^COPY /{t=$2; n=0; inside=1; next} inside && /^\\\.$/{print "| " t " | " n " |"; inside=0; next} inside{n++}' respaldo/data.sql \
-              | grep -E '"?(public|auth)"?\.' || true
+            awk '/^COPY /{t=$2; gsub(/"/,"",t); n=0; d=1; next} d && /^\\\.$/{print "| " t " | " n " |"; d=0; next} d{n++}' respaldo/data.sql respaldo/auth-datos.sql \
+              | grep -E '^\| (public|auth)\.' | sort -u
           } >> "$GITHUB_STEP_SUMMARY"
-          grep -q '^COPY "public"."products"\|^COPY public.products' respaldo/data.sql || { echo "::error::El volcado no contiene la tabla products"; exit 1; }
+          if [ ${#fallas[@]} -ne 0 ]; then
+            for f in "${fallas[@]}"; do echo "::error::$f"; done
+            rm -rf respaldo
+            exit 1
+          fi
 
       - name: Cifrar
         env:
