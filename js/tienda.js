@@ -27,6 +27,7 @@
     supabaseUrl: "",
     supabaseKey: "",
     whatsapp: "",
+    whatsapp2: "",
     instagram: "",
     envioGratisDesde: 12000,
     sitioOficial: "https://eldostore.com.ar/"
@@ -42,7 +43,12 @@
   const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const norm = v => String(v == null ? "" : v).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
   const limpiar = (v, max) => String(v == null ? "" : v).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
-  const numeroWhatsApp = () => { const n = String(CFG.whatsapp || "").replace(/\D/g, ""); return n.length >= 10 && n.length <= 15 ? n : ""; };
+  const limpiarNumero = v => { const n = String(v || "").replace(/\D/g, ""); return n.length >= 10 && n.length <= 15 ? n : ""; };
+  const numeroWhatsApp = () => limpiarNumero(CFG.whatsapp);
+  // Números que reciben pedidos del carrito (WhatsApp 1 y, si está configurado, WhatsApp 2)
+  const numerosPedido = () => Array.from(new Set([limpiarNumero(CFG.whatsapp), limpiarNumero(CFG.whatsapp2)].filter(Boolean)));
+  // 5493757613059 → "3757 613059" (como lo escribe la gente en Argentina)
+  const numeroVisible = n => { const l = n.startsWith("549") && n.length === 13 ? n.slice(3) : n; return l.length === 10 ? l.slice(0, 4) + " " + l.slice(4) : l; };
   const WA_SVG = $("#waFab svg") ? $("#waFab svg").outerHTML : "";
   const ICONO_FB = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.5 21v-7.5h2.6l.4-3h-3V8.6c0-.9.3-1.5 1.5-1.5h1.6V4.4c-.3 0-1.2-.1-2.3-.1-2.3 0-3.8 1.4-3.8 3.9v2.3H8v3h2.5V21h3z"/></svg>';
   const ICONO_IG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.3" cy="6.7" r="1" fill="currentColor" stroke="none"/></svg>';
@@ -901,6 +907,7 @@
   document.addEventListener("click", e => { const c = e.target.closest("[data-close]"); if (c) cerrar(!c.closest("a")); });
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape") return;
+    if (!elegirWa.hidden) { cerrarElegirWa(true); return; }
     if (!visor.hidden) { cerrarVisor(false); return; }
     if (abierto) { cerrar(); return; }
     if (!ficha.hidden) volverAlCatalogo();
@@ -909,8 +916,61 @@
 
   $("#orderForm").addEventListener("submit", e => e.preventDefault());
   $("#orderForm").addEventListener("input", actualizarMensaje);
+  /* ---------- Elegir a qué WhatsApp enviar el pedido ----------
+     Si hay dos números, el botón abre esta ventana. Cada opción es un enlace
+     directo a WhatsApp con el pedido completo (mensajePedido()); el carrito
+     no se modifica. Con un solo número, el botón funciona como siempre. */
+  const elegirWa = document.createElement("div");
+  elegirWa.className = "wa-pick"; elegirWa.hidden = true;
+  document.body.appendChild(elegirWa);
+  let focoElegir = null;
+  function abrirElegirWa() {
+    const nums = numerosPedido();
+    const txt = encodeURIComponent(mensajePedido());
+    const { unidades, total } = totales();
+    elegirWa.innerHTML = `<div class="wa-pick-box" role="dialog" aria-modal="true" aria-labelledby="waPickT" aria-describedby="waPickD">
+        <h2 id="waPickT">¿A qué WhatsApp enviás tu pedido?</h2>
+        <p id="waPickD">Se envía el pedido completo: ${unidades} artículo${unidades === 1 ? "" : "s"}, total ${money(total)} (sin envío).</p>
+        <div class="wa-pick-ops">${nums.map((n, i) => `
+          <a class="wa-op" href="https://wa.me/${n}?text=${txt}" target="_blank" rel="noopener noreferrer" data-wa="${i + 1}">
+            ${WA_SVG}<span><b>WhatsApp ${i + 1}</b><small>${numeroVisible(n)}</small></span></a>`).join("")}
+        </div>
+        <button type="button" class="ghost wa-pick-x" data-wa-cerrar>Cancelar</button>
+      </div>`;
+    focoElegir = document.activeElement;
+    elegirWa.hidden = false;
+    document.body.classList.add("wa-pick-open");
+    elegirWa.querySelector(".wa-op").focus();
+  }
+  function cerrarElegirWa(devolverFoco) {
+    if (elegirWa.hidden) return;
+    elegirWa.hidden = true; elegirWa.innerHTML = "";
+    document.body.classList.remove("wa-pick-open");
+    if (devolverFoco && focoElegir && document.body.contains(focoElegir)) focoElegir.focus();
+  }
+  elegirWa.addEventListener("click", e => {
+    const op = e.target.closest(".wa-op");
+    if (op) {
+      // El enlace abre WhatsApp con el pedido; acá solo se cierra la ventana y se avisa.
+      const s = $("#sendStatus");
+      s.textContent = `Se abrió el WhatsApp ${op.dataset.wa} con tu pedido. Para que lo revisemos, enviá el mensaje desde WhatsApp. El pedido queda pendiente hasta que ELDOSTORE lo confirme.`;
+      s.hidden = false;
+      setTimeout(() => cerrarElegirWa(true), 0);
+      return;
+    }
+    if (e.target === elegirWa || e.target.closest("[data-wa-cerrar]")) cerrarElegirWa(true);
+  });
+  elegirWa.addEventListener("keydown", e => {
+    if (e.key !== "Tab") return; // el foco queda dentro de la ventana
+    const f = Array.from(elegirWa.querySelectorAll("a, button"));
+    const i = f.indexOf(document.activeElement);
+    if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+  });
+
   $("#btnSend").addEventListener("click", e => {
     if (!numeroWhatsApp()) { e.preventDefault(); return; }
+    if (numerosPedido().length > 1) { e.preventDefault(); actualizarMensaje(); abrirElegirWa(); return; }
     actualizarMensaje();
     const s = $("#sendStatus");
     s.textContent = "Se abrió WhatsApp con tu pedido. Para que lo revisemos, enviá el mensaje desde WhatsApp. El pedido queda pendiente hasta que ELDOSTORE lo confirme.";
