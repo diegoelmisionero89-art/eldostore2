@@ -1177,10 +1177,10 @@
 },
 "179": {
 "medidas": [
-1200,
+896,
 1200
 ],
-"origen": "https://vahzvjhrtnfcjfrmwbol.supabase.co/storage/v1/object/public/productos-fotos/1793232620450-r0qg3dfm95c.jpeg"
+"origen": "https://vahzvjhrtnfcjfrmwbol.supabase.co/storage/v1/object/public/productos-fotos/1793643991395-fb6z9d9mws5.png"
 },
 "180": {
 "medidas": [
@@ -1342,5 +1342,12 @@
 1200
 ],
 "origen": "https://vahzvjhrtnfcjfrmwbol.supabase.co/storage/v1/object/public/productos-fotos/1793642525038-f4wtjtmk5ad.png"
+},
+"203": {
+"medidas": [
+896,
+1200
+],
+"origen": "https://vahzvjhrtnfcjfrmwbol.supabase.co/storage/v1/object/public/productos-fotos/1793644056021-yxgmqk8nkw8.png"
 }
 }
