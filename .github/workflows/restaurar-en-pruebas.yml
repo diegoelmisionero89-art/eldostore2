@@ -1,0 +1,116 @@
+# ELDOSTORE — Restaurar un respaldo en el proyecto Supabase de PRUEBAS (manual)
+#
+# Sirve para dos cosas a la vez:
+#   1. Demostrar que el respaldo de "Respaldo Supabase" SE PUEDE RECUPERAR.
+#   2. Dejar una copia fiel de la base real para probar la migración 005 y el panel
+#      sin tocar producción.
+#
+# Seguridad:
+#   * Solo escribe en SUPABASE_TEST_DB_URL. Se niega si apunta al mismo proyecto que
+#     SUPABASE_DB_URL (producción) o si la base de pruebas no está vacía.
+#   * Producción no se toca: ni se lee ni se escribe en este workflow.
+#   * Al terminar marca la base como de pruebas (tabla eldo_base_de_pruebas), que es
+#     la condición que exigen los scripts de pruebas.
+#
+# Secretos: SUPABASE_TEST_DB_URL (Session pooler del proyecto de PRUEBAS),
+#           RESPALDO_CLAVE (la misma clave del respaldo), SUPABASE_DB_URL (solo para
+#           comparar que no sea el mismo proyecto).
+# Uso: Actions → "Restaurar respaldo en pruebas" → Run workflow → pegar el número de
+#      ejecución (run id) del "Respaldo Supabase" que se quiere restaurar.
+
+name: Restaurar respaldo en pruebas
+
+on:
+  workflow_dispatch:
+    inputs:
+      respaldo_run_id:
+        description: 'Número de ejecución (run id) del workflow "Respaldo Supabase"'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restaurar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4   # trae data/migracion-003-invariantes.sql
+
+      - name: Verificar que el destino sea el proyecto de PRUEBAS
+        env:
+          TEST_URL: ${{ secrets.SUPABASE_TEST_DB_URL }}
+          PROD_URL: ${{ secrets.SUPABASE_DB_URL }}
+          CLAVE: ${{ secrets.RESPALDO_CLAVE }}
+        run: |
+          set -euo pipefail
+          [ -n "$TEST_URL" ] || { echo "::error::Falta el secreto SUPABASE_TEST_DB_URL"; exit 1; }
+          [ ${#CLAVE} -ge 12 ] || { echo "::error::Falta RESPALDO_CLAVE"; exit 1; }
+          ref() { echo "$1" | sed -nE 's#.*postgres\.([a-z0-9]{20})[:@].*#\1#p; s#.*db\.([a-z0-9]{20})\.supabase\.co.*#\1#p' | head -1; }
+          t=$(ref "$TEST_URL"); p=$(ref "${PROD_URL:-}")
+          [ -n "$t" ] || { echo "::error::No reconozco el proyecto en SUPABASE_TEST_DB_URL"; exit 1; }
+          if [ -n "$p" ] && [ "$t" = "$p" ]; then echo "::error::SUPABASE_TEST_DB_URL apunta a PRODUCCIÓN. No se restaura nada."; exit 1; fi
+          echo "Proyecto de pruebas: ${t:0:4}…  (distinto de producción)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comprobar que la base de pruebas esté vacía
+        env:
+          TEST_URL: ${{ secrets.SUPABASE_TEST_DB_URL }}
+        run: |
+          set -euo pipefail
+          hay=$(docker run --rm --network host -e TEST_URL postgres:17 sh -c 'psql "$TEST_URL" -XAtc "select to_regclass('"'"'public.products'"'"') is not null"')
+          [ "$hay" = "f" ] || { echo "::error::La base de pruebas ya tiene datos (public.products existe). Usá un proyecto nuevo y vacío."; exit 1; }
+
+      - name: Descargar el respaldo cifrado
+        uses: actions/download-artifact@v4
+        with:
+          name: eldostore-respaldo
+          run-id: ${{ inputs.respaldo_run_id }}
+          github-token: ${{ github.token }}
+          path: cifrado
+
+      - name: Descifrar y restaurar
+        env:
+          TEST_URL: ${{ secrets.SUPABASE_TEST_DB_URL }}
+          CLAVE: ${{ secrets.RESPALDO_CLAVE }}
+        run: |
+          set -euo pipefail
+          gpg --batch --pinentry-mode loopback --passphrase "$CLAVE" -d cifrado/*.gpg | tar xz
+          ls -la respaldo
+          pg() { docker run --rm --network host -e TEST_URL -v "$PWD/respaldo:/r" postgres:17 sh -c "$1"; }
+          # Mismo procedimiento que la documentación de Supabase (proyecto nuevo)
+          pg 'psql "$TEST_URL" --single-transaction -v ON_ERROR_STOP=1 -X -q -f /r/roles.sql -f /r/schema.sql -c "SET session_replication_role = replica" -f /r/data.sql'
+          # Usuarios de Auth: si el volcado de Supabase no los trajo, se cargan del volcado aparte
+          n=$(pg 'psql "$TEST_URL" -XAtc "select count(*) from auth.users"')
+          if [ "$n" = "0" ]; then
+            pg 'psql "$TEST_URL" --single-transaction -v ON_ERROR_STOP=1 -X -q -c "SET session_replication_role = replica" -f /r/auth-datos.sql'
+          fi
+          pg 'psql "$TEST_URL" -X -q -c "create table if not exists public.eldo_base_de_pruebas (creada timestamptz default now())"'
+
+      - name: Comprobar la recuperación (filas iguales al momento del respaldo)
+        env:
+          TEST_URL: ${{ secrets.SUPABASE_TEST_DB_URL }}
+        run: |
+          set -uo pipefail
+          IFS='|' read -r r_prod r_ventas r_usuarios < respaldo/conteo-en-vivo.txt
+          IFS='|' read -r t_prod t_ventas t_usuarios < <(docker run --rm --network host -e TEST_URL postgres:17 sh -c \
+            'psql "$TEST_URL" -XAtc "select (select count(*) from public.products), (select count(*) from public.sales), (select count(*) from auth.users)"')
+          {
+            echo "## Restauración en pruebas"
+            echo "| Tabla | Al respaldar (producción) | Restaurado (pruebas) |"
+            echo "|---|---|---|"
+            echo "| public.products | $r_prod | $t_prod |"
+            echo "| public.sales | $r_ventas | $t_ventas |"
+            echo "| auth.users | $r_usuarios | $t_usuarios |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$r_prod" = "$t_prod" ] && [ "$r_ventas" = "$t_ventas" ] && [ "$r_usuarios" = "$t_usuarios" ]; then
+            echo "### ✅ El respaldo se recuperó completo" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ❌ La restauración no coincide con el respaldo" >> "$GITHUB_STEP_SUMMARY"; exit 1
+          fi
+          # Reglas de consistencia de la V003 sobre la copia restaurada (tienen que dar 0)
+          docker run --rm --network host -e TEST_URL -v "$PWD/data:/d" postgres:17 sh -c \
+            'psql "$TEST_URL" -XAt -F " | " -f /d/migracion-003-invariantes.sql' | tee invariantes.txt
+          if grep -vqE '\| 0$' invariantes.txt; then echo "::error::Alguna regla de consistencia no da 0"; exit 1; fi
+          echo "Reglas de consistencia de la V003: todas en 0." >> "$GITHUB_STEP_SUMMARY"
+          rm -rf respaldo cifrado
