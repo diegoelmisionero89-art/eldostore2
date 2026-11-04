@@ -1,0 +1,113 @@
+# ELDOSTORE — Instalar la migración 005 (promociones) en la base REAL (manual)
+#
+# Controles antes de tocar nada (si uno falla, se detiene sin cambiar la base):
+#   1. Hay que escribir INSTALAR en la confirmación.
+#   2. SUPABASE_DB_URL tiene que ser el proyecto de producción de la tienda (vahzvjhrtnfcjfrmwbol).
+#   3. El archivo de la 005 tiene que ser exactamente la versión aprobada (sha256).
+#   4. Tiene que haber un "Respaldo Supabase" exitoso de las últimas 6 horas.
+#   5. Las reglas de consistencia de la V003 tienen que dar 0 antes de empezar.
+# Instalación: la 005 corre en una sola transacción; ante cualquier error no queda nada.
+# Después:
+#   * Huella de todas las tablas antes y después: las que ya existían tienen que quedar
+#     IDÉNTICAS (productos, ventas, caja, cuentas, clientes, todo).
+#   * Verificación con una venta de prueba con descuento, permisos y reglas de consistencia,
+#     dentro de una transacción que se DESHACE al final (no queda ninguna venta de prueba).
+#   * Huella otra vez: tiene que seguir idéntica.
+# El registro solo muestra cantidades, códigos md5 y OK/FALLA (el repositorio es público).
+# Para volver atrás: data/migracion-005-revertir.sql (en Supabase → SQL Editor).
+
+name: Instalar migración 005
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: 'Escribí INSTALAR para instalar la 005 en la base real'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROYECTO: vahzvjhrtnfcjfrmwbol
+  SHA_005: cd09404c01da550e3fb95efb2a39d291f4d816fde579de39e6651f1d0fdb9ea7
+
+jobs:
+  instalar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Controles previos (no cambian nada)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          CONFIRMAR: ${{ inputs.confirmar }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ "$CONFIRMAR" = "INSTALAR" ] || { echo "::error::Falta escribir INSTALAR"; exit 1; }
+          [ -n "$DB_URL" ] || { echo "::error::Falta el secreto SUPABASE_DB_URL"; exit 1; }
+          ref=$(echo "$DB_URL" | sed -nE 's#.*postgres\.([a-z0-9]{20})[:@].*#\1#p; s#.*db\.([a-z0-9]{20})\.supabase\.co.*#\1#p' | head -1)
+          [ "$ref" = "$PROYECTO" ] || { echo "::error::SUPABASE_DB_URL no es el proyecto de la tienda"; exit 1; }
+          grep -q "$PROYECTO.supabase.co" index.html || { echo "::error::index.html no apunta al proyecto de producción"; exit 1; }
+          echo "$SHA_005  data/migracion-005-promociones.sql" | sha256sum -c - || { echo "::error::El SQL no es la versión aprobada"; exit 1; }
+          ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/respaldo-supabase.yml/runs?status=success&per_page=1" \
+               --jq '.workflow_runs[0].created_at // ""')
+          [ -n "$ok" ] || { echo "::error::No hay ningún Respaldo Supabase exitoso"; exit 1; }
+          edad=$(( $(date +%s) - $(date -d "$ok" +%s) ))
+          [ $edad -le 21600 ] || { echo "::error::El último respaldo exitoso tiene más de 6 horas. Corré Respaldo Supabase antes."; exit 1; }
+          {
+            echo "## Instalación de la 005"
+            echo "- Proyecto: producción de la tienda (${PROYECTO:0:4}…) ✅"
+            echo "- SQL: versión aprobada (sha256 ${SHA_005:0:12}…) ✅"
+            echo "- Respaldo exitoso de hace $((edad/60)) minutos ✅"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Estado antes (solo lectura)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          pg() { docker run --rm --network host -e DB_URL -v "$PWD:/repo" -w /repo postgres:17 psql "$DB_URL" -X -v ON_ERROR_STOP=1 "$@"; }
+          ya=$(pg -tAc "select to_regclass('public.promo_banners') is not null")
+          [ "$ya" = "f" ] || { echo "::error::La 005 ya está instalada. No se hace nada."; exit 1; }
+          pg -tA -F '|' -f data/migracion-003-invariantes.sql | tee inv-antes.txt
+          if grep -vqE '\|0$' inv-antes.txt; then echo "::error::Las reglas de consistencia no dan 0 ANTES de instalar. No se instala."; exit 1; fi
+          pg -tA -F '|' -f data/migracion-005-huella.sql > huella-antes.txt
+          echo "Tablas antes: $(wc -l < huella-antes.txt)"; cut -d'|' -f1,2 huella-antes.txt
+
+      - name: Instalar la 005 (una sola transacción)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network host -e DB_URL -v "$PWD:/repo" -w /repo postgres:17 \
+            psql "$DB_URL" -X -q -v ON_ERROR_STOP=1 -f data/migracion-005-promociones.sql | tail -5
+          echo "- Migración 005 instalada ✅" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Control posterior
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          pg() { docker run --rm --network host -e DB_URL -v "$PWD:/repo" -w /repo postgres:17 psql "$DB_URL" -X -v ON_ERROR_STOP=1 "$@"; }
+          pg -tA -F '|' -f data/migracion-005-huella.sql > huella-despues.txt
+          cambios=$(comm -23 <(sort huella-antes.txt) <(sort huella-despues.txt))
+          if [ -n "$cambios" ]; then echo "::error::Cambió alguna tabla que ya existía:"; echo "$cambios" | cut -d'|' -f1,2; exit 1; fi
+          echo "- Todas las tablas que ya existían quedaron idénticas ($(wc -l < huella-antes.txt) tablas) ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tablas nuevas:"; comm -13 <(sort huella-antes.txt) <(sort huella-despues.txt) | cut -d'|' -f1,2
+          pg -tA -F ' | ' -f data/migracion-005-verificar.sql | tee verificacion.txt
+          if grep -q 'FALLA' verificacion.txt || grep -E '^I[0-9]' verificacion.txt | grep -vqE '\| 0$'; then
+            echo "::error::La verificación encontró un problema"; exit 1; fi
+          pg -tA -F '|' -f data/migracion-005-huella.sql > huella-final.txt
+          cmp -s huella-despues.txt huella-final.txt || { echo "::error::La verificación dejó cambios (no debería)"; exit 1; }
+          {
+            echo "- Verificación (venta con descuento, stock, caja, cuentas y permisos): todo OK, y deshecha ✅"
+            echo ""
+            echo '```'
+            cat verificacion.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f huella-*.txt inv-antes.txt verificacion.txt
