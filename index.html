@@ -48,6 +48,7 @@
 </header>
 
 <main>
+  <section class="promo-hero" id="promoHero" aria-label="Promociones" hidden></section>
   <section class="hero" aria-labelledby="heroTitle">
     <img class="hero-img" id="heroImg" src="img/banner-tecnologia.jpg" srcset="img/banner-tecnologia-944.jpg 944w, img/banner-tecnologia.jpg 1888w" sizes="(max-width: 650px) 100vw, 62vw" width="1888" height="612" fetchpriority="high" decoding="async"
          alt="Smart TV, smartphones, auriculares inalámbricos, parlantes Bluetooth, joysticks y accesorios tecnológicos sobre un fondo oscuro con luces doradas">
@@ -65,6 +66,14 @@
 
   <div class="wrap">
     <nav class="cats" id="cats" aria-label="Categorías"></nav>
+
+    <section class="flash" id="flash" aria-labelledby="flashTitulo" hidden>
+      <div class="flash-hd">
+        <h2><span aria-hidden="true">⚡</span> <span id="flashTitulo">Ofertas flash</span></h2>
+        <p class="flash-reloj-box">Termina en <span class="flash-reloj" id="flashReloj" role="timer"></span></p>
+      </div>
+      <div class="flash-track" id="flashTrack"></div>
+    </section>
 
     <div class="section-title" id="productos">
       <h2 id="catTitle">Productos destacados</h2>

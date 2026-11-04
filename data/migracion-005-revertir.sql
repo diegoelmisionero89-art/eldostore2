@@ -27,7 +27,7 @@ select
 begin;
 drop function if exists
   public.registrar_venta_promocion(uuid, jsonb, text, text, uuid, timestamptz),
-  public.promociones_panel(),
+  public.promociones_panel(timestamptz),
   public.promociones_tienda(),
   public.terminar_oferta_flash(),
   public.guardar_oferta_flash(text, timestamptz, timestamptz, jsonb),

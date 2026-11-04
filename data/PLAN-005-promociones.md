@@ -1,7 +1,18 @@
 # ELDOSTORE — Migración 005 (promociones): procedimiento para revisión
 
-Estado: SQL escrito y probado SOLO en la base simulada local. Nada ejecutado en la base
-real, nada publicado en main.
+Estado: implementación completa en la rama `promociones-revision` (SQL, panel y tienda),
+probada SOLO en la base simulada local. Nada ejecutado en la base real, nada publicado en main.
+
+Resultado de las pruebas locales (4/11/2026):
+- `migracion-005-pruebas.sql`: 39 de 39.
+- Panel, de punta a punta (Diego, Niko y base sin la 005): 45 de 45.
+- Tienda, de punta a punta (celular y computadora, vencimiento, control antes de WhatsApp,
+  base sin la 005): 49 de 49.
+- Pruebas anteriores repetidas: WhatsApp con dos números 32/32, código en el pedido 16/16,
+  galería y ficha 37/37, enlaces 15/16 (la que falla falla igual con main: es por los datos de prueba).
+- Reglas de consistencia de la V003: todas en 0 después de las ventas con descuento.
+- Reversión probada: deja precios, costos, stock y categorías iguales; reinstalar después funciona;
+  correr la 005 dos veces se rechaza sin cambiar nada.
 
 Archivos:
 - `data/migracion-005-promociones.sql`: la migración (solo agrega).
@@ -52,8 +63,9 @@ Decisiones de Diego aplicadas:
   - Guarda el detalle en `ventas_descuentos`: precio habitual, %, precio aplicado,
     origen (manual o flash) y fecha del pedido.
   - Las ventas sin descuento siguen exactamente como hoy.
-- **Pendiente de diseño para la etapa de implementación:** corregir una venta con
-  descuento (que la corrección conserve el descuento validado).
+- **Corregir una venta con descuento:** la corrección (función de la V003) conserva los
+  precios con los que se vendió cada línea. El detalle de `ventas_descuentos` queda asociado
+  a la venta original (que la corrección anula), así que para consultarlo se mira la venta original.
 
 ## 3. Ofertas vencidas
 - **En la base:**
@@ -81,7 +93,7 @@ Decisiones de Diego aplicadas:
    (tiene que dar todo OK).
 5. **Rama de prueba** con el código del panel y de la tienda, apuntando al proyecto de
    PRUEBAS (solo en esa rama).
-   - Antes de publicar, un control automático comprueba que main apunte a producción.
+   - Antes de publicar se comprueba que en main la configuración siga apuntando a producción.
 6. **Revisión desde el iPhone** con la versión de prueba (raw.githack).
    - La tienda publicada y la base real no cambian.
    - Ojo: los WhatsApp de la versión de prueba son los números reales.

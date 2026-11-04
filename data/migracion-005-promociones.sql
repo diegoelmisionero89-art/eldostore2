@@ -439,12 +439,18 @@ returns jsonb language sql stable security definer set search_path = public, pg_
 $$;
 
 -- Panel: estado completo para administrar (solo usuarios habilitados).
-create function public.promociones_panel()
+-- p_en (opcional): fecha para calcular los descuentos (pedido hecho antes, hasta 7 días).
+create function public.promociones_panel(p_en timestamptz default null)
 returns jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare v_en timestamptz := coalesce(p_en, now());
 begin
   perform eldo_requiere_usuario();
+  if v_en > now() + interval '5 minutes' or v_en < now() - interval '7 days' then
+    raise exception 'La fecha tiene que estar entre los últimos 7 días y ahora.';
+  end if;
   return jsonb_build_object(
     'ahora', now(),
+    'en', v_en,
     'esAdmin', eldo_es_admin(),
     'banners', coalesce((select jsonb_agg(to_jsonb(b) order by b.ubicacion, b.orden) from promo_banners b), '[]'),
     'categorias', coalesce((select jsonb_agg(to_jsonb(c) || jsonb_build_object('productos',
@@ -452,7 +458,7 @@ begin
                   from categorias_tienda c), '[]'),
     'descuentos', coalesce((select jsonb_agg(jsonb_build_object('productoId', p.id, 'porcentaje', d.porcentaje,
                     'origen', d.origen, 'referencia', d.referencia, 'vence', d.vence))
-                  from products p cross join lateral eldo_descuento_en(p.id, now()) d), '[]'),
+                  from products p cross join lateral eldo_descuento_en(p.id, v_en) d), '[]'),
     'flash', (select to_jsonb(f) || jsonb_build_object('productos', coalesce((select jsonb_agg(jsonb_build_object(
                     'productId', fp.product_id, 'porcentaje', fp.porcentaje) order by fp.orden)
                   from ofertas_flash_productos fp where fp.oferta_id = f.id), '[]'))
@@ -547,7 +553,7 @@ $permisos$;
 
 grant execute on function public.promociones_tienda() to anon, authenticated;
 grant execute on function
-  public.promociones_panel(),
+  public.promociones_panel(timestamptz),
   public.guardar_banner(uuid, text, text, text, text, text, boolean),
   public.ordenar_banners(text, uuid[]),
   public.eliminar_banner(uuid),
