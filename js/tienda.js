@@ -1207,7 +1207,9 @@
     clearInterval(tReloj);
     if (!vigente) { $("#flashTrack").innerHTML = ""; return; }
     $("#flashTitulo").textContent = f.titulo || "Ofertas flash";
+    $("#flashCant").textContent = prods.length > 1 ? `· ${prods.length} productos` : "";
     $("#flashTrack").innerHTML = prods.map(tarjeta).join("");
+    requestAnimationFrame(flechasFlash);
     const reloj = () => {
       const ms = Date.parse(f.termina) - ahoraSrv();
       if (ms <= 0) { clearInterval(tReloj); refrescarPromos(true); return; }
@@ -1218,6 +1220,25 @@
     };
     reloj(); tReloj = setInterval(reloj, 1000);
   }
+
+  // Flechas del carrusel flash: solo con mouse (en el celular se desliza con el dedo) y si hay más productos que espacio
+  const conMouse = () => matchMedia("(hover: hover) and (pointer: fine)").matches;
+  function flechasFlash() {
+    const t = $("#flashTrack"); if (!t) return;
+    const hay = conMouse() && t.scrollWidth > t.clientWidth + 4;
+    const izq = $(".flash-nav.prev"), der = $(".flash-nav.next");
+    izq.hidden = der.hidden = !hay;
+    if (!hay) return;
+    izq.disabled = t.scrollLeft <= 4;
+    der.disabled = t.scrollLeft + t.clientWidth >= t.scrollWidth - 4;
+  }
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-flash]"); if (!b) return;
+    const t = $("#flashTrack");
+    t.scrollBy({ left: Number(b.dataset.flash) * Math.max(160, t.clientWidth * 0.85), behavior: reducirMov() ? "auto" : "smooth" });
+  });
+  document.addEventListener("scroll", e => { if (e.target && e.target.id === "flashTrack") requestAnimationFrame(flechasFlash); }, { passive: true, capture: true });
+  addEventListener("resize", () => requestAnimationFrame(flechasFlash));
 
   // Antes de abrir WhatsApp: si una oferta venció, se actualizan los precios y no se envía el precio viejo.
   document.addEventListener("click", e => {

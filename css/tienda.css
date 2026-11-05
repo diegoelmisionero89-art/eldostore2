@@ -547,3 +547,15 @@ body.lbx-open .ficha{overflow:hidden}
   .pcar-slide img{aspect-ratio:16/8}
   .promo-mid .pcar-slide img{aspect-ratio:16/6}
 }
+
+/* Carrusel de ofertas flash: flechas en computadora, deslizar con el dedo en el celular */
+.flash-cant{font-size:13px;font-weight:600;color:#d9d6de}
+.flash-car{position:relative}
+.flash-nav{position:absolute;top:38%;z-index:2;width:42px;height:42px;border:0;border-radius:50%;background:var(--gold);color:#15100a;font-size:26px;line-height:1;box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;display:grid;place-items:center}
+.flash-nav[hidden]{display:none}
+.flash-nav.prev{left:4px}
+.flash-nav.next{right:4px}
+.flash-nav:disabled{opacity:.35;cursor:default}
+.flash-nav:focus-visible{outline:3px solid #fff;outline-offset:2px}
+.flash-track:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
+.flash-track{scroll-padding-inline:14px}

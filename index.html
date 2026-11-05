@@ -69,10 +69,14 @@
 
     <section class="flash" id="flash" aria-labelledby="flashTitulo" hidden>
       <div class="flash-hd">
-        <h2><span aria-hidden="true">⚡</span> <span id="flashTitulo">Ofertas flash</span></h2>
+        <h2><span aria-hidden="true">⚡</span> <span id="flashTitulo">Ofertas flash</span> <span class="flash-cant" id="flashCant"></span></h2>
         <p class="flash-reloj-box">Termina en <span class="flash-reloj" id="flashReloj" role="timer"></span></p>
       </div>
-      <div class="flash-track" id="flashTrack"></div>
+      <div class="flash-car">
+        <button type="button" class="flash-nav prev" data-flash="-1" aria-label="Ver ofertas anteriores" hidden>‹</button>
+        <div class="flash-track" id="flashTrack" tabindex="0" aria-label="Productos en oferta flash"></div>
+        <button type="button" class="flash-nav next" data-flash="1" aria-label="Ver más ofertas" hidden>›</button>
+      </div>
     </section>
 
     <div class="section-title" id="productos">

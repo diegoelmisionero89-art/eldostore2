@@ -1856,41 +1856,53 @@ async function eliminarCategoriaUI(id) {
   try { await eliminarCategoria(id); populateCategorySelects(); showToast('Categoría eliminada.'); renderTienda(); } catch (e) { showError(e); }
 }
 
-/* Ofertas flash */
+/* Ofertas flash: UNA campaña con varios productos, cada uno con su %, y una sola fecha de inicio y fin */
 function htmlFlash() {
   const f = PROMOS.flash;
   const prod = id => DB.products.find(p => p.id === id);
+  const lista = f ? f.productos.map(x => ({ x, p: prod(x.productId) })).filter(o => o.p) : [];
   return `<div class="panel">
     <h3>Oferta flash</h3>
-    <p class="muted-sm">Una oferta a la vez, con temporizador. Al terminar, cada producto vuelve solo a su precio anterior.</p>
-    ${f ? `<div class="notice"><strong>${esc(f.titulo)}</strong><br>
+    <p class="muted-sm">Una campaña a la vez, con varios productos y un temporizador. Cada producto tiene su propio %. Al terminar, todos vuelven solos a su precio anterior.</p>
+    ${f ? `<div class="notice"><strong>${esc(f.titulo)}</strong> · ${lista.length} producto${lista.length === 1 ? '' : 's'}<br>
         ${Date.parse(f.inicia) > ahoraServidor() ? 'Empieza ' + fmtDate(f.inicia) + ' · ' : 'En curso · '}termina ${fmtDate(f.termina)}</div>
-      <div class="promo-list">${f.productos.map(x => { const p = prod(x.productId); return p ? `
+      <div class="promo-list">${lista.map(({ x, p }) => `
         <div class="promo-item"><div class="promo-meta"><strong>${esc(p.nombre)}</strong>
-          <small>Código ${esc(p.codigo)} · ${x.porcentaje}% OFF · ${fmt(p.precio)} → ${fmt(precioConDescuento(p.precio, x.porcentaje))}</small></div></div>` : ''; }).join('')}</div>
-      <div class="toolbar"><button class="btn btn-sm" ${adminOnly()} onclick="editarFlashUI()">Cambiar la oferta</button>
+          <small>Código ${esc(p.codigo)} · <b>${x.porcentaje}% OFF</b> · <s>${fmt(p.precio)}</s> → ${fmt(precioConDescuento(p.precio, x.porcentaje))}</small></div></div>`).join('')}</div>
+      <div class="toolbar"><button class="btn btn-primary btn-sm" ${adminOnly()} onclick="editarFlashUI()">Agregar o quitar productos</button>
         <button class="btn btn-sm btn-danger" ${adminOnly()} onclick="terminarFlashUI()">Terminar ahora</button></div>`
     : `<p>No hay una oferta flash vigente.</p><button class="btn btn-primary btn-sm" ${adminOnly()} onclick="editarFlashUI()">+ Crear oferta flash</button>`}
   </div>`;
 }
 let flashBorrador = [];
+let flashFechasOriginales = null;
+// Si no se tocó la fecha, se manda la original exacta (el campo del formulario no tiene segundos)
+function fechaFlash(valor, original) { return original && valor === aLocal(original) ? original : new Date(valor).toISOString(); }
 const aLocal = iso => { const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 function editarFlashUI() {
   const f = PROMOS.flash;
-  flashBorrador = f ? f.productos.map(x => ({ productId: x.productId, porcentaje: x.porcentaje })) : [];
+  flashBorrador = f ? f.productos.filter(x => DB.products.some(p => p.id === x.productId))
+                                 .map(x => ({ productId: x.productId, porcentaje: x.porcentaje })) : [];
   const ahora = new Date(ahoraServidor());
+  flashFechasOriginales = f ? { inicia: f.inicia, termina: f.termina } : null;
   openModal(`
-    <h3>${f ? 'Cambiar la oferta flash' : 'Nueva oferta flash'}</h3>
-    ${f ? '<div class="notice">Al guardar, la oferta actual se cierra y empieza esta.</div>' : ''}
+    <h3>${f ? 'Editar la oferta flash' : 'Nueva oferta flash'}</h3>
+    ${f ? '<div class="notice">Se mantienen el título y las fechas de la campaña (podés cambiarlos). Al guardar, la tienda se actualiza con la lista nueva.</div>' : ''}
     <div class="field"><label>Título</label><input id="fl_titulo" maxlength="80" value="${f ? esc(f.titulo) : 'Ofertas flash'}"></div>
     <div class="two-col">
       <div class="field"><label>Empieza</label><input type="datetime-local" id="fl_inicia" value="${aLocal(f ? f.inicia : ahora)}"></div>
       <div class="field"><label>Termina</label><input type="datetime-local" id="fl_termina" value="${aLocal(f ? f.termina : new Date(ahora.getTime() + 24 * 3600e3))}"></div>
     </div>
-    <div class="field"><label>Agregar productos</label>
-      <input id="fl_buscar" placeholder="Buscar por código o nombre" oninput="buscarFlash(this.value)" autocomplete="off">
+    <div class="field"><label>Agregar productos a la campaña</label>
+      <input id="fl_buscar" placeholder="Buscar por código o nombre" oninput="buscarFlash(this.value)" autocomplete="off" enterkeyhint="search">
+      <small>Podés agregar todos los productos que quieras, de a uno.</small>
       <div id="fl_resultados" class="busca-res"></div></div>
-    <div id="fl_lista"></div>
+    <div class="flash-sel">
+      <div class="flash-sel-hd"><strong id="fl_cant">Productos de la campaña (0)</strong>
+        <span class="flash-todos">Mismo % para todos <input type="number" id="fl_todos" min="1" max="90" inputmode="numeric" class="pct-in" aria-label="Porcentaje para todos">
+          <button type="button" class="btn btn-sm" onclick="pctTodosFlash()">Aplicar</button></span></div>
+      <div id="fl_lista"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary btn-sm" id="flBtn" onclick="guardarFlashUI()">Guardar oferta</button>
@@ -1900,40 +1912,68 @@ function editarFlashUI() {
 function buscarFlash(q) {
   const t = q.trim().toLowerCase(), el = document.getElementById('fl_resultados');
   if (!t) { el.innerHTML = ''; return; }
-  const res = DB.products.filter(p => (p.codigo + ' ' + p.nombre).toLowerCase().includes(t) && !flashBorrador.some(x => x.productId === p.id)).slice(0, 8);
-  el.innerHTML = res.map(p => `<button type="button" class="busca-item" onclick="agregarFlash('${p.id}')">${esc(p.codigo)} · ${esc(p.nombre)} <span>${fmt(p.precio)}</span></button>`).join('')
+  const res = DB.products.filter(p => (p.codigo + ' ' + p.nombre).toLowerCase().includes(t)).slice(0, 8);
+  el.innerHTML = res.map(p => flashBorrador.some(x => x.productId === p.id)
+      ? `<div class="busca-item ya">${esc(p.codigo)} · ${esc(p.nombre)} <span>✓ En la campaña</span></div>`
+      : `<button type="button" class="busca-item" onclick="agregarFlash('${p.id}')">${esc(p.codigo)} · ${esc(p.nombre)} <span>${fmt(p.precio)} · + Agregar</span></button>`).join('')
     || '<small>Sin resultados.</small>';
 }
 function agregarFlash(id) {
-  flashBorrador.push({ productId: id, porcentaje: 20 });
-  document.getElementById('fl_buscar').value = ''; document.getElementById('fl_resultados').innerHTML = '';
+  if (flashBorrador.some(x => x.productId === id)) return;
+  const todos = Number(document.getElementById('fl_todos').value);
+  flashBorrador.push({ productId: id, porcentaje: todos >= 1 && todos <= 90 ? Math.trunc(todos) : 20 });
+  const b = document.getElementById('fl_buscar'); b.value = ''; document.getElementById('fl_resultados').innerHTML = '';
   dibujarFlashBorrador();
+  const p = DB.products.find(x => x.id === id);
+  showToast(`Agregado: ${p ? p.nombre : 'producto'}. Podés buscar otro.`);
+  b.focus();
+}
+function quitarFlash(i) { flashBorrador.splice(i, 1); dibujarFlashBorrador(); }
+function moverFlash(i, dir) {
+  const j = i + dir; if (j < 0 || j >= flashBorrador.length) return;
+  [flashBorrador[i], flashBorrador[j]] = [flashBorrador[j], flashBorrador[i]]; dibujarFlashBorrador();
+}
+function pctFlash(i, valor) {
+  const n = Number(valor); flashBorrador[i].porcentaje = n;
+  const p = DB.products.find(q => q.id === flashBorrador[i].productId);
+  const el = document.getElementById('fl_p' + i);
+  if (p && el) el.textContent = n >= 1 && n <= 90 ? fmt(precioConDescuento(p.precio, n)) : '—';
+}
+function pctTodosFlash() {
+  const n = Number(document.getElementById('fl_todos').value);
+  if (!(n >= 1 && n <= 90) || n !== Math.trunc(n)) { showToast('Elegí un porcentaje entero de 1 a 90.'); return; }
+  flashBorrador.forEach(x => { x.porcentaje = n; }); dibujarFlashBorrador();
 }
 function dibujarFlashBorrador() {
   const el = document.getElementById('fl_lista'); if (!el) return;
+  document.getElementById('fl_cant').textContent = `Productos de la campaña (${flashBorrador.length})`;
   el.innerHTML = flashBorrador.length ? flashBorrador.map((x, i) => {
     const p = DB.products.find(q => q.id === x.productId); if (!p) return '';
-    return `<div class="promo-item"><div class="promo-meta"><strong>${esc(p.nombre)}</strong>
-        <small>${esc(p.codigo)} · ${fmt(p.precio)} → <b id="fl_p${i}">${fmt(precioConDescuento(p.precio, x.porcentaje))}</b></small></div>
-      <div class="promo-acc"><input type="number" min="1" max="90" inputmode="numeric" class="pct-in" value="${x.porcentaje}" aria-label="Porcentaje"
-          oninput="flashBorrador[${i}].porcentaje=Number(this.value);document.getElementById('fl_p${i}').textContent=fmt(precioConDescuento(${p.precio}, Number(this.value)||0))"> %
-        <button class="btn btn-sm" onclick="flashBorrador.splice(${i},1);dibujarFlashBorrador()">Quitar</button></div></div>`;
-  }).join('') : '<p class="muted-sm">Todavía no elegiste productos.</p>';
+    return `<div class="promo-item flash-it"><div class="promo-meta"><strong>${i + 1}. ${esc(p.nombre)}</strong>
+        <small>${esc(p.codigo)} · <s>${fmt(p.precio)}</s> → <b id="fl_p${i}">${fmt(precioConDescuento(p.precio, x.porcentaje))}</b></small></div>
+      <div class="promo-acc"><label class="pct-lbl"><input type="number" min="1" max="90" step="1" inputmode="numeric" class="pct-in" value="${x.porcentaje}"
+          aria-label="Porcentaje de ${esc(p.nombre)}" oninput="pctFlash(${i}, this.value)"> % OFF</label>
+        <button type="button" class="btn btn-sm" ${i === 0 ? 'disabled' : ''} onclick="moverFlash(${i}, -1)" aria-label="Subir">↑</button>
+        <button type="button" class="btn btn-sm" ${i === flashBorrador.length - 1 ? 'disabled' : ''} onclick="moverFlash(${i}, 1)" aria-label="Bajar">↓</button>
+        <button type="button" class="btn btn-sm btn-danger" onclick="quitarFlash(${i})">Quitar</button></div></div>`;
+  }).join('') : '<p class="muted-sm">Todavía no elegiste productos. Buscalos arriba y tocá "+ Agregar".</p>';
 }
 async function guardarFlashUI() {
   const inicia = document.getElementById('fl_inicia').value, termina = document.getElementById('fl_termina').value;
   if (!inicia || !termina || new Date(termina) <= new Date(inicia)) { showToast('Revisá las fechas: el fin tiene que ser posterior al inicio.'); return; }
+  if (new Date(termina).getTime() <= ahoraServidor()) { showToast('La fecha de fin ya pasó.'); return; }
   if (!flashBorrador.length) { showToast('Agregá al menos un producto.'); return; }
   if (flashBorrador.some(x => !(x.porcentaje >= 1 && x.porcentaje <= 90) || x.porcentaje !== Math.trunc(x.porcentaje))) { showToast('Cada producto necesita un porcentaje entero de 1 a 90.'); return; }
   const btn = document.getElementById('flBtn'); btn.disabled = true;
   try {
-    await guardarOfertaFlash({ titulo: document.getElementById('fl_titulo').value.trim(), inicia: new Date(inicia).toISOString(),
-      termina: new Date(termina).toISOString(), productos: flashBorrador });
-    closeModal(); showToast('Oferta flash guardada.'); renderTienda();
+    const o = flashFechasOriginales || {};
+    await guardarOfertaFlash({ titulo: document.getElementById('fl_titulo').value.trim(), inicia: fechaFlash(inicia, o.inicia),
+      termina: fechaFlash(termina, o.termina), productos: flashBorrador });
+    closeModal(); showToast(`Oferta flash guardada con ${flashBorrador.length} producto${flashBorrador.length === 1 ? '' : 's'}.`); renderTienda();
   } catch (e) { showError(e); btn.disabled = false; }
 }
 async function terminarFlashUI() {
-  if (!confirm('¿Terminar la oferta flash ahora? Los productos vuelven a su precio anterior.')) return;
+  if (!confirm('¿Terminar la oferta flash ahora? Todos sus productos vuelven a su precio anterior.')) return;
   try { await terminarOfertaFlash(); showToast('Oferta terminada.'); renderTienda(); } catch (e) { showError(e); }
 }
 
