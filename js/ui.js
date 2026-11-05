@@ -19,6 +19,14 @@
    ========================================================================== */
 
 const CATEGORIAS = ['Electrónica', 'Celulares', 'Smart TV', 'Electrodomésticos', 'Herramientas', 'Accesorios', 'Hogar', 'Variados'];
+/* Categorías para elegir: las de "Tienda online → Categorías" (migración 005);
+   si no está instalada, la lista fija de siempre. Incluye la actual del producto. */
+function listaCategorias(actual) {
+  const base = (typeof PROMOS !== 'undefined' && PROMOS.disponible && PROMOS.categorias.length)
+    ? PROMOS.categorias.map(c => c.nombre) : CATEGORIAS.slice();
+  if (actual && !base.includes(actual)) base.push(actual);
+  return base;
+}
 
 function fmt(n) { return '$' + Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 }); }
 /* Escapa texto para mostrarlo dentro de HTML (nombres, motivos, notas). */
@@ -85,6 +93,7 @@ async function boot() {
     return;
   }
   document.body.classList.toggle('modo-cuentas', modoCuentas());
+  document.body.classList.toggle('modo-promos', PROMOS.disponible);
   mostrarAvisosDeLectura();
 
   document.querySelectorAll('.nav-item').forEach(item => {
@@ -110,13 +119,13 @@ function switchView(view) {
   const titles = {
     dashboard: 'Dashboard', productos: 'Productos / Inventario', clientes: 'Clientes', pedidos: 'Pedidos',
     ventas: 'Ventas', compras: 'Compras', gastos: 'Gastos', caja: 'Caja', envios: 'Envíos',
-    reportes: 'Reportes', config: 'Configuración', cuentas: 'Cuentas'
+    reportes: 'Reportes', config: 'Configuración', cuentas: 'Cuentas', tienda: 'Tienda online'
   };
   document.getElementById('viewTitle').textContent = titles[view] || '';
   const renderers = {
     dashboard: renderDashboard, productos: renderProducts, clientes: renderClients, pedidos: renderOrders,
     ventas: renderSales, compras: renderPurchases, gastos: renderExpenses, caja: renderCash, envios: renderShipments,
-    reportes: renderReportes, cuentas: renderCuentas, config: renderConfig
+    reportes: renderReportes, cuentas: renderCuentas, config: renderConfig, tienda: renderTienda
   };
   if (renderers[view]) renderers[view]();
 }
@@ -124,7 +133,7 @@ function switchView(view) {
 function populateCategorySelects() {
   const filt = document.getElementById('prodCatFilter');
   filt.innerHTML = '<option value="">Todas las categorías</option>';
-  CATEGORIAS.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; filt.appendChild(o); });
+  listaCategorias().forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; filt.appendChild(o); });
   const est = document.getElementById('pedEstadoFilter');
   est.innerHTML = '<option value="">Todos los estados</option>';
   ESTADOS_PEDIDO.forEach(e => { const o = document.createElement('option'); o.value = e; o.textContent = e; est.appendChild(o); });
@@ -229,7 +238,7 @@ function renderProducts() {
       <td class="solo-cuentas">${modoCuentas() ? cuentaBadge(p.ownerAccountId) : ''}</td>
       <td>${p.categoria ? esc(p.categoria) : '<em style="color:var(--muted)">sin categoría</em>'}</td>
       <td>${fmt(p.costo)}</td>
-      <td>${fmt(p.precio)}</td>
+      <td>${fmt(p.precio)}${precioPromoHTML(p)}</td>
       <td>${fmt(p.gananciaUnit)}</td>
       <td>${p.margenPct}%</td>
       <td>${p.stock}${p.stock <= p.stockMin ? ' <span class="badge badge-warn">bajo</span>' : ''}</td>
@@ -238,6 +247,7 @@ function renderProducts() {
         <button class="icon-action" onclick="adjustStockPrompt('${p.id}', 1)">+</button>
         <button class="icon-action" onclick="adjustStockPrompt('${p.id}', -1)">−</button>
         <button class="icon-action" onclick="openProductModal('${p.id}')">✎</button>
+        ${PROMOS.disponible && PROMOS.esAdmin ? `<button class="icon-action" title="Descuento" onclick="openDescuentoModal('${p.id}')">%</button>` : ''}
         <button class="icon-action" onclick="handleDeleteProduct('${p.id}')">🗑</button>
       </td>
     </tr>`).join('') : '<tr><td colspan="11" class="empty-state">No se encontraron productos.</td></tr>';
@@ -283,7 +293,7 @@ function openProductModal(id) {
       <div class="field"><label>Categoría</label>
         <select id="f_categoria">
           <option value="" ${p && !p.categoria ? 'selected' : ''}>Sin categoría</option>
-          ${CATEGORIAS.map(c => `<option ${p && p.categoria === c ? 'selected' : ''}>${c}</option>`).join('')}
+          ${listaCategorias(p && p.categoria).map(c => `<option ${p && p.categoria === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -720,6 +730,7 @@ function duenoParaLinea(productoId) {
 function openSaleModal(editId) {
   const original = editId ? DB.sales.find(v => v.id === editId) : null;
   saleEditingId = original ? original.id : null;
+  saleDescuentos = null; saleFechaPedido = '';
   saleDraftModalidad = original ? original.modalidad : '';
   saleDraftItems = original ? original.items.map(i => ({
     productoId: i.productoId, nombre: i.nombre, cantidad: Number(i.cantidad), precioVenta: Number(i.precioVenta),
@@ -750,6 +761,9 @@ function openSaleModal(editId) {
       <div id="v_itemsList" style="margin-top:10px;font-size:.85rem"></div>
     </div>
     <div class="field"><label>Método de pago</label><input id="v_metodoPago" placeholder="Efectivo, transferencia..." value="${original ? esc(original.metodoPago) : ''}"></div>
+    ${!original && PROMOS.disponible ? `<div class="field"><label>Fecha del pedido (solo si el cliente pidió antes, con una oferta que ya terminó)</label>
+      <input type="datetime-local" id="v_fechaPedido" onchange="cambiarFechaPedido(this.value)">
+      <small>Vacío = ahora. Se aceptan pedidos de hasta 7 días atrás; la base controla que el descuento valía en esa fecha.</small></div>` : ''}
     <div id="v_resumen" class="sale-summary"></div>
     ${original ? `<div class="field" style="margin-top:14px"><label>Motivo de la corrección *</label><input id="v_motivo" placeholder="Ej.: cantidad mal cargada, era venta por revendedor..."></div>` : ''}
     <div class="modal-actions">
@@ -774,8 +788,10 @@ function addSaleDraftItem() {
   const enBorrador = saleDraftItems.filter(x => x.productoId === productoId).reduce((a, x) => a + x.cantidad, 0);
   const disponible = p.stock + unidadesEnVentaOriginal(productoId) - enBorrador;
   if (cantidad > disponible) { showToast(`Stock insuficiente de "${p.nombre}" (disponible: ${disponible}).`); return; }
-  saleDraftItems.push({ productoId, cantidad, precioVenta: p.precio, nombre: p.nombre, costoUnit: costoParaLinea(productoId), comisionPct: '',
-                       ownerAccountId: duenoParaLinea(productoId) });
+  const linea = { productoId, cantidad, precioVenta: p.precio, nombre: p.nombre, costoUnit: costoParaLinea(productoId), comisionPct: '',
+                  ownerAccountId: duenoParaLinea(productoId), precioHabitual: p.precio };
+  if (!saleEditingId) aplicarDescuentoLinea(linea, true);
+  saleDraftItems.push(linea);
   renderSaleDraftItems();
 }
 
@@ -792,7 +808,7 @@ function renderSaleDraftItems() {
         return `<tr>
           <td class="prod">${esc(it.nombre)}</td>
           ${modoCuentas() ? `<td data-label="Cuenta">${cuentaBadge(it.ownerAccountId)}</td>` : ''}
-          <td data-label="Cantidad">${it.cantidad}</td><td data-label="Precio u.">${fmt(it.precioVenta)}</td>
+          <td data-label="Cantidad">${it.cantidad}</td><td data-label="Precio u.">${fmt(it.precioVenta)}${lineaDescuentoHTML(it, i)}</td>
           <td data-label="Importe">${fmt(l.subtotal)}</td><td data-label="Costo">${fmt(l.costoTotal)}</td>
           ${rev ? `<td data-label="% revendedor"><input type="number" inputmode="decimal" min="0" max="100" step="0.1" placeholder="%" value="${it.comisionPct}" oninput="setSaleItemPct(${i}, this.value)"></td>
                    <td data-label="Comisión" id="v_com_${i}">${fmt(l.comision)}</td>` : ''}
@@ -849,6 +865,8 @@ async function saveSale() {
     holderId: document.getElementById('v_holder') ? document.getElementById('v_holder').value : null
   };
   if (modoCuentas() && !datos.holderId) { showToast('Indicá quién cobró.'); return; }
+  const conDescuento = !saleEditingId && saleDraftItems.some(it => it.descuentoPct);
+  if (conDescuento) datos.fechaPedido = fechaPedidoISO();
   let motivo = '';
   if (saleEditingId) {
     motivo = document.getElementById('v_motivo').value.trim();
@@ -862,7 +880,7 @@ async function saveSale() {
     if (saleEditingId) {
       await correctSale(saleEditingId, motivo, datos);
     } else {
-      const r = await registerSale(datos);
+      const r = conDescuento ? await registerSalePromocion(datos) : await registerSale(datos);
       if (r.error) throw new Error(r.error);
     }
   } catch (e) { showError(e); btn.disabled = false; btn.textContent = textoBtn; return; }
@@ -1522,4 +1540,425 @@ async function handleVincularUsuario() {
     showToast('Usuario actualizado.');
     renderConfig();
   } catch (e) { showError(e); }
+}
+
+/* ======================= PROMOCIONES (migración 005) =======================
+   Descuentos en ventas y productos, y la sección "Tienda online": banners,
+   carrusel intermedio, categorías, ofertas flash y descuentos.
+   Todo se guarda con funciones de la base que exigen al administrador. */
+
+let saleDescuentos = null;   // descuentos de la fecha del pedido (null = ahora)
+let saleFechaPedido = '';
+const ORIGEN_DTO = { manual: 'descuento', flash: 'oferta flash' };
+
+function precioPromoHTML(p) {
+  if (!PROMOS.disponible) return '';
+  const d = descuentoVigente(p.id);
+  return d ? `<br><span class="badge badge-dto">−${d.porcentaje}% · ${fmt(precioConDescuento(p.precio, d.porcentaje))}</span>` : '';
+}
+
+function fechaPedidoISO() { return saleFechaPedido ? new Date(saleFechaPedido).toISOString() : null; }
+
+function aplicarDescuentoLinea(linea) {
+  const momento = saleFechaPedido ? Date.parse(new Date(saleFechaPedido).toISOString()) : null;
+  const d = PROMOS.disponible ? descuentoVigente(linea.productoId, saleDescuentos || PROMOS.descuentos, momento) : null;
+  linea.descuentoDisponible = d ? { porcentaje: d.porcentaje, origen: d.origen, vence: d.vence } : null;
+  if (d && !linea.usarHabitual) {
+    linea.precioVenta = precioConDescuento(linea.precioHabitual, d.porcentaje);
+    linea.descuentoPct = d.porcentaje; linea.descuentoOrigen = d.origen;
+  } else {
+    linea.precioVenta = linea.precioHabitual;
+    linea.descuentoPct = null; linea.descuentoOrigen = null;
+  }
+}
+
+function lineaDescuentoHTML(it, i) {
+  if (saleEditingId || !it.descuentoDisponible) return '';
+  const d = it.descuentoDisponible;
+  return it.descuentoPct
+    ? `<br><small class="dto-linea">${d.porcentaje}% OFF (${ORIGEN_DTO[d.origen] || d.origen}) · habitual ${fmt(it.precioHabitual)}</small>
+       <br><button type="button" class="link-btn" onclick="toggleDescuentoLinea(${i})">Usar precio habitual</button>`
+    : `<br><small>Precio habitual</small><br><button type="button" class="link-btn" onclick="toggleDescuentoLinea(${i})">Aplicar ${d.porcentaje}% OFF</button>`;
+}
+function toggleDescuentoLinea(i) {
+  const it = saleDraftItems[i]; if (!it) return;
+  it.usarHabitual = !it.usarHabitual;
+  aplicarDescuentoLinea(it);
+  renderSaleDraftItems();
+}
+async function cambiarFechaPedido(valor) {
+  saleFechaPedido = valor || '';
+  try {
+    saleDescuentos = saleFechaPedido ? await descuentosEn(fechaPedidoISO()) : null;
+  } catch (e) { showError(e); saleFechaPedido = ''; saleDescuentos = null; const f = document.getElementById('v_fechaPedido'); if (f) f.value = ''; }
+  saleDraftItems.forEach(aplicarDescuentoLinea);
+  renderSaleDraftItems();
+}
+
+/* ------------------------- Descuento de un producto ------------------------- */
+function openDescuentoModal(productId) {
+  if (!PROMOS.esAdmin) { showToast('Solo el administrador puede cambiar descuentos.'); return; }
+  const p = DB.products.find(x => x.id === productId); if (!p) return;
+  const d = descuentoVigente(p.id);
+  const manual = d && d.origen === 'manual';
+  openModal(`
+    <h3>Descuento: ${esc(p.nombre)}</h3>
+    <p class="muted-sm">Código ${esc(p.codigo)} · precio habitual <strong>${fmt(p.precio)}</strong> (no cambia).</p>
+    ${d ? `<div class="notice">Ahora tiene <strong>${d.porcentaje}% OFF</strong> (${ORIGEN_DTO[d.origen]})${d.vence ? ' hasta ' + fmtDate(d.vence) : ''}: ${fmt(precioConDescuento(p.precio, d.porcentaje))}.
+      ${d.origen === 'flash' ? '<br>Mientras dure la oferta flash vale su porcentaje; al terminar vuelve este descuento manual, si lo ponés.' : ''}</div>` : ''}
+    <div class="field"><label>Porcentaje</label>
+      <div class="chips">${[10, 15, 20, 25, 30, 35, 40, 50, 60].map(n => `<button type="button" class="chip" onclick="elegirPct(${n})">${n}%</button>`).join('')}</div>
+      <input type="number" id="dto_pct" min="1" max="90" step="1" inputmode="numeric" placeholder="Otro (1 a 90)" value="${manual ? d.porcentaje : ''}" oninput="vistaPreviaDto(${p.precio})">
+      <p id="dto_vista" class="muted-sm"></p>
+    </div>
+    <div class="field"><label>Termina (opcional)</label><input type="datetime-local" id="dto_hasta"><small>Vacío = hasta que lo quites.</small></div>
+    <div class="modal-actions">
+      ${manual ? `<button class="btn btn-sm btn-danger" onclick="quitarDescuentoUI('${p.id}')">Quitar descuento</button>` : ''}
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="dtoBtn" onclick="guardarDescuentoUI('${p.id}')">Guardar</button>
+    </div>`);
+  vistaPreviaDto(p.precio);
+}
+function elegirPct(n) { const i = document.getElementById('dto_pct'); i.value = n; i.dispatchEvent(new Event('input')); }
+function vistaPreviaDto(precio) {
+  const n = Number(document.getElementById('dto_pct').value);
+  document.getElementById('dto_vista').innerHTML = n >= 1 && n <= 90
+    ? `Precio con descuento: <strong>${fmt(precioConDescuento(precio, n))}</strong> (habitual ${fmt(precio)})` : '';
+}
+async function guardarDescuentoUI(productId) {
+  const n = Number(document.getElementById('dto_pct').value);
+  if (!(n >= 1 && n <= 90) || n !== Math.trunc(n)) { showToast('Elegí un porcentaje entero de 1 a 90.'); return; }
+  const h = document.getElementById('dto_hasta').value;
+  const btn = document.getElementById('dtoBtn'); btn.disabled = true;
+  try {
+    await ponerDescuento(productId, n, h ? new Date(h).toISOString() : null);
+    closeModal(); showToast(`Descuento de ${n}% aplicado.`); refrescarVistaActual();
+  } catch (e) { showError(e); btn.disabled = false; }
+}
+async function quitarDescuentoUI(productId) {
+  if (!confirm('¿Quitar el descuento? El producto vuelve a su precio habitual.')) return;
+  try { await quitarDescuento(productId); closeModal(); showToast('Descuento quitado.'); refrescarVistaActual(); }
+  catch (e) { showError(e); }
+}
+function refrescarVistaActual() {
+  const v = document.querySelector('.view.active');
+  if (v && v.id === 'view-productos') renderProducts();
+  if (v && v.id === 'view-tienda') renderTienda();
+}
+
+/* --------------------------- Vista "Tienda online" -------------------------- */
+let tiendaTab = 'banners';
+const TABS_TIENDA = [['banners', 'Banners'], ['intermedio', 'Carrusel intermedio'], ['categorias', 'Categorías'], ['flash', 'Ofertas flash'], ['descuentos', 'Descuentos']];
+
+function renderTienda() {
+  const el = document.getElementById('tiendaContenido'); if (!el) return;
+  if (!PROMOS.disponible) {
+    el.innerHTML = `<div class="panel"><h3>Falta instalar la migración 005</h3>
+      <p class="muted-sm">Cuando esté instalada, desde acá vas a administrar banners, categorías, ofertas flash y descuentos de la tienda.</p></div>`;
+    return;
+  }
+  const tabs = `<div class="tabs" role="tablist">${TABS_TIENDA.map(([k, t]) =>
+    `<button type="button" role="tab" class="tab${tiendaTab === k ? ' on' : ''}" aria-selected="${tiendaTab === k}" onclick="tiendaTab='${k}';renderTienda()">${t}</button>`).join('')}</div>`;
+  const aviso = PROMOS.esAdmin ? '' : '<div class="notice">Solo el administrador puede hacer cambios. Vos podés ver la configuración.</div>';
+  const cuerpo = { banners: () => htmlBanners('principal'), intermedio: () => htmlBanners('intermedio'),
+                   categorias: htmlCategorias, flash: htmlFlash, descuentos: htmlDescuentos }[tiendaTab]();
+  el.innerHTML = tabs + aviso + cuerpo;
+}
+const adminOnly = () => PROMOS.esAdmin ? '' : 'disabled';
+
+/* Banners (principal e intermedio) */
+function htmlBanners(ubicacion) {
+  const lista = PROMOS.banners.filter(b => b.ubicacion === ubicacion);
+  const activos = lista.filter(b => b.activo).length;
+  const princ = ubicacion === 'principal';
+  return `<div class="panel">
+    <h3>${princ ? 'Banners principales' : 'Carrusel entre productos'}</h3>
+    <p class="muted-sm">${princ
+      ? `Carrusel de arriba de la tienda. Hasta 7 activos (ahora ${activos}). Medida ideal: 1600 × 700 px. Sin banners activos se muestra el banner actual.`
+      : `Aparece entre los productos, aproximadamente cada 14. Medida ideal: 1600 × 500 px. Activos: ${activos}.`}</p>
+    <label class="btn btn-primary btn-sm file-btn ${adminOnly() ? 'is-disabled' : ''}">+ Agregar imagen
+      <input type="file" accept="image/*" ${adminOnly()} onchange="agregarBannerUI('${ubicacion}', this)"></label>
+    <div class="promo-list">${lista.length ? lista.map((b, i) => `
+      <div class="promo-item${b.activo ? '' : ' off'}">
+        <img src="${esc(b.imagen_url)}" alt="${esc(b.texto_alt)}" class="promo-thumb wide" loading="lazy">
+        <div class="promo-meta">
+          <strong>${b.activo ? '● Activo' : '○ Inactivo'}</strong>
+          <small>${enlaceTexto(b)}</small>
+        </div>
+        <div class="promo-acc">
+          <button class="btn btn-sm" ${adminOnly()} ${i === 0 ? 'disabled' : ''} onclick="moverBanner('${ubicacion}', ${i}, -1)" aria-label="Subir">↑</button>
+          <button class="btn btn-sm" ${adminOnly()} ${i === lista.length - 1 ? 'disabled' : ''} onclick="moverBanner('${ubicacion}', ${i}, 1)" aria-label="Bajar">↓</button>
+          <button class="btn btn-sm" ${adminOnly()} onclick="activarBannerUI('${b.id}', ${!b.activo})">${b.activo ? 'Desactivar' : 'Activar'}</button>
+          <button class="btn btn-sm" ${adminOnly()} onclick="editarBannerUI('${b.id}')">Editar</button>
+          <button class="btn btn-sm btn-danger" ${adminOnly()} onclick="eliminarBannerUI('${b.id}')">Eliminar</button>
+        </div>
+      </div>`).join('') : '<p class="muted-sm">Todavía no hay imágenes.</p>'}</div>
+  </div>`;
+}
+function enlaceTexto(b) {
+  if (b.enlace_tipo === 'producto') { const p = DB.products.find(x => x.codigo === b.enlace_valor); return 'Abre el producto ' + esc(b.enlace_valor) + (p ? ' · ' + esc(p.nombre) : ' (no encontrado)'); }
+  if (b.enlace_tipo === 'categoria') return 'Abre la categoría ' + esc(b.enlace_valor);
+  if (b.enlace_tipo === 'url') return 'Abre ' + esc(b.enlace_valor);
+  return 'Sin enlace';
+}
+async function agregarBannerUI(ubicacion, input) {
+  const f = input.files[0]; input.value = ''; if (!f) return;
+  const activos = PROMOS.banners.filter(b => b.ubicacion === ubicacion && b.activo).length;
+  try {
+    showToast('Subiendo imagen…');
+    const url = await subirImagenPromo(f, 'banners');
+    await guardarBanner({ ubicacion, imagen_url: url, activo: !(ubicacion === 'principal' && activos >= 7) });
+    showToast(ubicacion === 'principal' && activos >= 7 ? 'Imagen agregada como inactiva (ya hay 7 activas).' : 'Imagen agregada.');
+    renderTienda();
+  } catch (e) { showError(e); }
+}
+async function moverBanner(ubicacion, i, dir) {
+  const ids = PROMOS.banners.filter(b => b.ubicacion === ubicacion).map(b => b.id);
+  [ids[i], ids[i + dir]] = [ids[i + dir], ids[i]];
+  try { await ordenarBanners(ubicacion, ids); renderTienda(); } catch (e) { showError(e); }
+}
+async function activarBannerUI(id, activo) {
+  const b = PROMOS.banners.find(x => x.id === id); if (!b) return;
+  try { await guardarBanner(Object.assign({}, b, { activo })); renderTienda(); } catch (e) { showError(e); }
+}
+async function eliminarBannerUI(id) {
+  if (!confirm('¿Eliminar esta imagen del carrusel?')) return;
+  try { await eliminarBanner(id); showToast('Imagen eliminada.'); renderTienda(); } catch (e) { showError(e); }
+}
+function editarBannerUI(id) {
+  const b = PROMOS.banners.find(x => x.id === id); if (!b) return;
+  openModal(`
+    <h3>Editar imagen</h3>
+    <img src="${esc(b.imagen_url)}" alt="" id="bn_prev" class="promo-thumb wide" style="margin-bottom:10px">
+    <div class="field"><label>Reemplazar imagen</label><input type="file" accept="image/*" id="bn_file"></div>
+    <div class="field"><label>Texto alternativo (para lectores de pantalla)</label><input id="bn_alt" maxlength="160" value="${esc(b.texto_alt)}"></div>
+    <div class="field"><label>Al tocar la imagen</label>
+      <select id="bn_tipo" onchange="camposEnlace()">
+        ${[['ninguno', 'No hace nada'], ['producto', 'Abre un producto'], ['categoria', 'Abre una categoría'], ['url', 'Abre una página web']]
+          .map(([v, t]) => `<option value="${v}" ${b.enlace_tipo === v ? 'selected' : ''}>${t}</option>`).join('')}
+      </select></div>
+    <div class="field" id="bn_valorBox"></div>
+    <label class="check-row"><input type="checkbox" id="bn_activo" ${b.activo ? 'checked' : ''}> Activo</label>
+    <div class="modal-actions">
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="bnBtn" onclick="guardarBannerUI('${b.id}')">Guardar</button>
+    </div>`);
+  camposEnlace(b.enlace_valor);
+}
+function camposEnlace(valor) {
+  const tipo = document.getElementById('bn_tipo').value, box = document.getElementById('bn_valorBox');
+  const v = valor !== undefined ? valor : '';
+  box.innerHTML = tipo === 'producto' ? `<label>Código del producto</label><input id="bn_valor" value="${esc(v)}" placeholder="Ej.: 009" list="bn_codigos">
+      <datalist id="bn_codigos">${DB.products.map(p => `<option value="${esc(p.codigo)}">${esc(p.nombre)}</option>`).join('')}</datalist>`
+    : tipo === 'categoria' ? `<label>Categoría</label><select id="bn_valor">${PROMOS.categorias.map(c => `<option ${c.nombre === v ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('')}</select>`
+    : tipo === 'url' ? `<label>Dirección (https://…)</label><input id="bn_valor" type="url" value="${esc(v)}" placeholder="https://">` : '';
+}
+async function guardarBannerUI(id) {
+  const b = PROMOS.banners.find(x => x.id === id); if (!b) return;
+  const tipo = document.getElementById('bn_tipo').value;
+  const valorEl = document.getElementById('bn_valor');
+  const valor = valorEl ? valorEl.value.trim() : '';
+  if (tipo === 'producto' && !DB.products.some(p => p.codigo === valor)) { showToast('No existe un producto con ese código.'); return; }
+  if (tipo === 'url' && !/^https:\/\/\S+$/.test(valor)) { showToast('La dirección tiene que empezar con https://'); return; }
+  const btn = document.getElementById('bnBtn'); btn.disabled = true;
+  try {
+    const f = document.getElementById('bn_file').files[0];
+    const url = f ? await subirImagenPromo(f, 'banners') : b.imagen_url;
+    await guardarBanner(Object.assign({}, b, { imagen_url: url, texto_alt: document.getElementById('bn_alt').value,
+      enlace_tipo: tipo, enlace_valor: tipo === 'ninguno' ? '' : valor, activo: document.getElementById('bn_activo').checked }));
+    closeModal(); showToast('Imagen guardada.'); renderTienda();
+  } catch (e) { showError(e); btn.disabled = false; }
+}
+
+/* Categorías */
+function htmlCategorias() {
+  const lista = PROMOS.categorias;
+  return `<div class="panel">
+    <h3>Categorías</h3>
+    <p class="muted-sm">El orden de esta lista es el de la tienda. Imagen ideal: cuadrada, 400 × 400 px. Una categoría oculta no se muestra como botón, pero sus productos siguen a la venta.</p>
+    <button class="btn btn-primary btn-sm" ${adminOnly()} onclick="editarCategoriaUI('')">+ Nueva categoría</button>
+    <div class="promo-list">${lista.map((c, i) => `
+      <div class="promo-item${c.visible ? '' : ' off'}">
+        ${c.imagen_url ? `<img src="${esc(c.imagen_url)}" alt="" class="promo-thumb" loading="lazy">` : '<span class="promo-thumb vacio">Sin imagen</span>'}
+        <div class="promo-meta"><strong>${esc(c.nombre)}</strong><small>${c.productos} producto${c.productos === 1 ? '' : 's'} · ${c.visible ? 'visible' : 'oculta'}</small></div>
+        <div class="promo-acc">
+          <button class="btn btn-sm" ${adminOnly()} ${i === 0 ? 'disabled' : ''} onclick="moverCategoria(${i}, -1)" aria-label="Subir">↑</button>
+          <button class="btn btn-sm" ${adminOnly()} ${i === lista.length - 1 ? 'disabled' : ''} onclick="moverCategoria(${i}, 1)" aria-label="Bajar">↓</button>
+          <button class="btn btn-sm" ${adminOnly()} onclick="visibleCategoriaUI('${c.id}', ${!c.visible})">${c.visible ? 'Ocultar' : 'Mostrar'}</button>
+          <button class="btn btn-sm" ${adminOnly()} onclick="editarCategoriaUI('${c.id}')">Editar</button>
+          ${c.productos ? `<button class="btn btn-sm" ${adminOnly()} onclick="reasignarCategoriaUI('${c.id}')">Mover productos</button>`
+                        : `<button class="btn btn-sm btn-danger" ${adminOnly()} onclick="eliminarCategoriaUI('${c.id}')">Eliminar</button>`}
+        </div>
+      </div>`).join('')}</div>
+  </div>`;
+}
+async function moverCategoria(i, dir) {
+  const ids = PROMOS.categorias.map(c => c.id);
+  [ids[i], ids[i + dir]] = [ids[i + dir], ids[i]];
+  try { await ordenarCategorias(ids); renderTienda(); } catch (e) { showError(e); }
+}
+async function visibleCategoriaUI(id, visible) {
+  const c = PROMOS.categorias.find(x => x.id === id); if (!c) return;
+  try { await guardarCategoria(Object.assign({}, c, { visible })); renderTienda(); } catch (e) { showError(e); }
+}
+function editarCategoriaUI(id) {
+  const c = id ? PROMOS.categorias.find(x => x.id === id) : null;
+  openModal(`
+    <h3>${c ? 'Editar categoría' : 'Nueva categoría'}</h3>
+    <div class="field"><label>Nombre</label><input id="ct_nombre" maxlength="60" value="${c ? esc(c.nombre) : ''}">
+      ${c && c.productos ? `<small>Si cambiás el nombre, se actualiza en sus ${c.productos} producto(s). No cambian precios ni stock.</small>` : ''}</div>
+    ${c && c.imagen_url ? `<img src="${esc(c.imagen_url)}" alt="" class="promo-thumb" style="margin-bottom:8px">
+      <label class="check-row"><input type="checkbox" id="ct_sinImagen"> Quitar la imagen</label>` : ''}
+    <div class="field"><label>${c && c.imagen_url ? 'Reemplazar imagen' : 'Imagen (opcional)'}</label><input type="file" accept="image/*" id="ct_file"></div>
+    <label class="check-row"><input type="checkbox" id="ct_visible" ${!c || c.visible ? 'checked' : ''}> Visible en la tienda</label>
+    <div class="modal-actions">
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="ctBtn" onclick="guardarCategoriaUI('${c ? c.id : ''}')">Guardar</button>
+    </div>`);
+}
+async function guardarCategoriaUI(id) {
+  const c = id ? PROMOS.categorias.find(x => x.id === id) : null;
+  const nombre = document.getElementById('ct_nombre').value.trim();
+  if (!nombre) { showToast('Escribí el nombre.'); return; }
+  if (c && c.productos && nombre !== c.nombre && !confirm(`Se va a cambiar "${c.nombre}" por "${nombre}" en ${c.productos} producto(s). ¿Continuar?`)) return;
+  const btn = document.getElementById('ctBtn'); btn.disabled = true;
+  try {
+    const f = document.getElementById('ct_file').files[0];
+    const quitar = document.getElementById('ct_sinImagen') && document.getElementById('ct_sinImagen').checked;
+    const url = f ? await subirImagenPromo(f, 'categorias') : (quitar ? '' : (c ? c.imagen_url : ''));
+    const r = await guardarCategoria({ id: id || null, nombre, imagen_url: url, visible: document.getElementById('ct_visible').checked });
+    closeModal(); populateCategorySelects();
+    showToast(r && r.productos_actualizados ? `Categoría guardada. ${r.productos_actualizados} producto(s) actualizados.` : 'Categoría guardada.');
+    renderTienda();
+  } catch (e) { showError(e); btn.disabled = false; }
+}
+function reasignarCategoriaUI(id) {
+  const c = PROMOS.categorias.find(x => x.id === id); if (!c) return;
+  openModal(`
+    <h3>Mover productos de "${esc(c.nombre)}"</h3>
+    <p class="muted-sm">Los ${c.productos} producto(s) pasan a la categoría que elijas. No cambian precios ni stock. Después vas a poder eliminar "${esc(c.nombre)}".</p>
+    <div class="field"><label>Nueva categoría</label><select id="ct_destino">${PROMOS.categorias.filter(x => x.id !== id)
+      .map(x => `<option value="${x.id}">${esc(x.nombre)}</option>`).join('')}</select></div>
+    <div class="modal-actions">
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" onclick="confirmarReasignar('${id}')">Mover</button>
+    </div>`);
+}
+async function confirmarReasignar(id) {
+  try {
+    const r = await reasignarCategoria(id, document.getElementById('ct_destino').value);
+    closeModal(); showToast(`${r.productos_movidos} producto(s) movidos.`); renderTienda();
+  } catch (e) { showError(e); }
+}
+async function eliminarCategoriaUI(id) {
+  const c = PROMOS.categorias.find(x => x.id === id); if (!c) return;
+  if (!confirm(`¿Eliminar la categoría "${c.nombre}"? No tiene productos.`)) return;
+  try { await eliminarCategoria(id); populateCategorySelects(); showToast('Categoría eliminada.'); renderTienda(); } catch (e) { showError(e); }
+}
+
+/* Ofertas flash */
+function htmlFlash() {
+  const f = PROMOS.flash;
+  const prod = id => DB.products.find(p => p.id === id);
+  return `<div class="panel">
+    <h3>Oferta flash</h3>
+    <p class="muted-sm">Una oferta a la vez, con temporizador. Al terminar, cada producto vuelve solo a su precio anterior.</p>
+    ${f ? `<div class="notice"><strong>${esc(f.titulo)}</strong><br>
+        ${Date.parse(f.inicia) > ahoraServidor() ? 'Empieza ' + fmtDate(f.inicia) + ' · ' : 'En curso · '}termina ${fmtDate(f.termina)}</div>
+      <div class="promo-list">${f.productos.map(x => { const p = prod(x.productId); return p ? `
+        <div class="promo-item"><div class="promo-meta"><strong>${esc(p.nombre)}</strong>
+          <small>Código ${esc(p.codigo)} · ${x.porcentaje}% OFF · ${fmt(p.precio)} → ${fmt(precioConDescuento(p.precio, x.porcentaje))}</small></div></div>` : ''; }).join('')}</div>
+      <div class="toolbar"><button class="btn btn-sm" ${adminOnly()} onclick="editarFlashUI()">Cambiar la oferta</button>
+        <button class="btn btn-sm btn-danger" ${adminOnly()} onclick="terminarFlashUI()">Terminar ahora</button></div>`
+    : `<p>No hay una oferta flash vigente.</p><button class="btn btn-primary btn-sm" ${adminOnly()} onclick="editarFlashUI()">+ Crear oferta flash</button>`}
+  </div>`;
+}
+let flashBorrador = [];
+const aLocal = iso => { const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+function editarFlashUI() {
+  const f = PROMOS.flash;
+  flashBorrador = f ? f.productos.map(x => ({ productId: x.productId, porcentaje: x.porcentaje })) : [];
+  const ahora = new Date(ahoraServidor());
+  openModal(`
+    <h3>${f ? 'Cambiar la oferta flash' : 'Nueva oferta flash'}</h3>
+    ${f ? '<div class="notice">Al guardar, la oferta actual se cierra y empieza esta.</div>' : ''}
+    <div class="field"><label>Título</label><input id="fl_titulo" maxlength="80" value="${f ? esc(f.titulo) : 'Ofertas flash'}"></div>
+    <div class="two-col">
+      <div class="field"><label>Empieza</label><input type="datetime-local" id="fl_inicia" value="${aLocal(f ? f.inicia : ahora)}"></div>
+      <div class="field"><label>Termina</label><input type="datetime-local" id="fl_termina" value="${aLocal(f ? f.termina : new Date(ahora.getTime() + 24 * 3600e3))}"></div>
+    </div>
+    <div class="field"><label>Agregar productos</label>
+      <input id="fl_buscar" placeholder="Buscar por código o nombre" oninput="buscarFlash(this.value)" autocomplete="off">
+      <div id="fl_resultados" class="busca-res"></div></div>
+    <div id="fl_lista"></div>
+    <div class="modal-actions">
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="flBtn" onclick="guardarFlashUI()">Guardar oferta</button>
+    </div>`, true);
+  dibujarFlashBorrador();
+}
+function buscarFlash(q) {
+  const t = q.trim().toLowerCase(), el = document.getElementById('fl_resultados');
+  if (!t) { el.innerHTML = ''; return; }
+  const res = DB.products.filter(p => (p.codigo + ' ' + p.nombre).toLowerCase().includes(t) && !flashBorrador.some(x => x.productId === p.id)).slice(0, 8);
+  el.innerHTML = res.map(p => `<button type="button" class="busca-item" onclick="agregarFlash('${p.id}')">${esc(p.codigo)} · ${esc(p.nombre)} <span>${fmt(p.precio)}</span></button>`).join('')
+    || '<small>Sin resultados.</small>';
+}
+function agregarFlash(id) {
+  flashBorrador.push({ productId: id, porcentaje: 20 });
+  document.getElementById('fl_buscar').value = ''; document.getElementById('fl_resultados').innerHTML = '';
+  dibujarFlashBorrador();
+}
+function dibujarFlashBorrador() {
+  const el = document.getElementById('fl_lista'); if (!el) return;
+  el.innerHTML = flashBorrador.length ? flashBorrador.map((x, i) => {
+    const p = DB.products.find(q => q.id === x.productId); if (!p) return '';
+    return `<div class="promo-item"><div class="promo-meta"><strong>${esc(p.nombre)}</strong>
+        <small>${esc(p.codigo)} · ${fmt(p.precio)} → <b id="fl_p${i}">${fmt(precioConDescuento(p.precio, x.porcentaje))}</b></small></div>
+      <div class="promo-acc"><input type="number" min="1" max="90" inputmode="numeric" class="pct-in" value="${x.porcentaje}" aria-label="Porcentaje"
+          oninput="flashBorrador[${i}].porcentaje=Number(this.value);document.getElementById('fl_p${i}').textContent=fmt(precioConDescuento(${p.precio}, Number(this.value)||0))"> %
+        <button class="btn btn-sm" onclick="flashBorrador.splice(${i},1);dibujarFlashBorrador()">Quitar</button></div></div>`;
+  }).join('') : '<p class="muted-sm">Todavía no elegiste productos.</p>';
+}
+async function guardarFlashUI() {
+  const inicia = document.getElementById('fl_inicia').value, termina = document.getElementById('fl_termina').value;
+  if (!inicia || !termina || new Date(termina) <= new Date(inicia)) { showToast('Revisá las fechas: el fin tiene que ser posterior al inicio.'); return; }
+  if (!flashBorrador.length) { showToast('Agregá al menos un producto.'); return; }
+  if (flashBorrador.some(x => !(x.porcentaje >= 1 && x.porcentaje <= 90) || x.porcentaje !== Math.trunc(x.porcentaje))) { showToast('Cada producto necesita un porcentaje entero de 1 a 90.'); return; }
+  const btn = document.getElementById('flBtn'); btn.disabled = true;
+  try {
+    await guardarOfertaFlash({ titulo: document.getElementById('fl_titulo').value.trim(), inicia: new Date(inicia).toISOString(),
+      termina: new Date(termina).toISOString(), productos: flashBorrador });
+    closeModal(); showToast('Oferta flash guardada.'); renderTienda();
+  } catch (e) { showError(e); btn.disabled = false; }
+}
+async function terminarFlashUI() {
+  if (!confirm('¿Terminar la oferta flash ahora? Los productos vuelven a su precio anterior.')) return;
+  try { await terminarOfertaFlash(); showToast('Oferta terminada.'); renderTienda(); } catch (e) { showError(e); }
+}
+
+/* Descuentos vigentes */
+function htmlDescuentos() {
+  const lista = PROMOS.descuentos.map(d => ({ d, p: DB.products.find(x => x.id === d.productoId) })).filter(x => x.p && descuentoVigente(x.p.id));
+  return `<div class="panel">
+    <h3>Descuentos vigentes</h3>
+    <p class="muted-sm">El precio habitual no cambia; la tienda, el carrito, WhatsApp y las ventas usan el precio con descuento mientras esté vigente.</p>
+    <div class="field"><label>Poner un descuento</label>
+      <input placeholder="Buscar producto por código o nombre" oninput="buscarDto(this.value)" autocomplete="off" ${adminOnly()}>
+      <div id="dto_resultados" class="busca-res"></div></div>
+    <div class="promo-list">${lista.length ? lista.map(({ d, p }) => `
+      <div class="promo-item"><div class="promo-meta"><strong>${esc(p.nombre)}</strong>
+        <small>${esc(p.codigo)} · <b>${d.porcentaje}% OFF</b> (${ORIGEN_DTO[d.origen]}) · ${fmt(p.precio)} → ${fmt(precioConDescuento(p.precio, d.porcentaje))}${d.vence ? ' · hasta ' + fmtDate(d.vence) : ''}</small></div>
+        <div class="promo-acc">${d.origen === 'manual'
+          ? `<button class="btn btn-sm" ${adminOnly()} onclick="openDescuentoModal('${p.id}')">Cambiar</button>
+             <button class="btn btn-sm btn-danger" ${adminOnly()} onclick="quitarDescuentoUI('${p.id}')">Quitar</button>`
+          : '<small>Se administra en Ofertas flash</small>'}</div></div>`).join('') : '<p class="muted-sm">No hay descuentos vigentes.</p>'}</div>
+  </div>`;
+}
+function buscarDto(q) {
+  const t = q.trim().toLowerCase(), el = document.getElementById('dto_resultados');
+  if (!t) { el.innerHTML = ''; return; }
+  el.innerHTML = DB.products.filter(p => (p.codigo + ' ' + p.nombre).toLowerCase().includes(t)).slice(0, 8)
+    .map(p => `<button type="button" class="busca-item" onclick="openDescuentoModal('${p.id}')">${esc(p.codigo)} · ${esc(p.nombre)} <span>${fmt(p.precio)}</span></button>`).join('')
+    || '<small>Sin resultados.</small>';
 }

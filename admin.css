@@ -186,3 +186,37 @@ body.modo-cuentas .sin-cuentas{display:none !important}
 .cuenta-filas div{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:.88rem}
 .cuenta-filas span{color:var(--muted)}
 .cuenta-filas .destacado strong{color:var(--gold)}
+
+/* ---------- Tienda online (migración 005): banners, categorías, ofertas y descuentos ---------- */
+body:not(.modo-promos) .solo-promos{display:none !important}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px;padding-bottom:4px;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;min-height:40px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--muted);font-weight:700;font-size:.85rem;cursor:pointer}
+.tab.on{border-color:var(--gold);color:var(--gold);background:rgba(212,170,75,.1)}
+.muted-sm{color:var(--muted);font-size:.85rem;margin:4px 0 12px}
+.promo-list{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.promo-item{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 12px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--card2)}
+.promo-item.off{opacity:.6}
+.promo-item > .promo-meta:first-child{grid-column:1/-1}
+.promo-thumb{width:64px;height:64px;object-fit:cover;border-radius:10px;background:#fff;display:grid;place-items:center;font-size:.65rem;color:#777;text-align:center}
+.promo-thumb.wide{width:100%;max-width:340px;height:auto;aspect-ratio:16/7;grid-column:1/-1}
+.promo-thumb.vacio{background:var(--dark);border:1px dashed var(--line)}
+.promo-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
+.promo-meta small{color:var(--muted);font-size:.8rem;overflow-wrap:anywhere}
+.promo-acc{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.promo-acc .btn{min-height:38px}
+.file-btn{position:relative;overflow:hidden;display:inline-flex;align-items:center;cursor:pointer}
+.file-btn input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.file-btn.is-disabled{opacity:.5;pointer-events:none}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chip{min-height:40px;min-width:54px;padding:0 10px;border:1px solid var(--line);border-radius:10px;background:var(--dark);color:inherit;font-weight:800;cursor:pointer}
+.chip:hover,.chip:focus-visible{border-color:var(--gold);color:var(--gold)}
+.busca-res{display:flex;flex-direction:column;gap:4px;margin-top:6px;max-height:260px;overflow-y:auto}
+.busca-item{display:flex;justify-content:space-between;gap:10px;min-height:42px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--dark);color:inherit;text-align:left;cursor:pointer}
+.busca-item span{color:var(--gold);white-space:nowrap}
+.pct-in{width:70px !important;min-width:0 !important}
+.check-row{display:flex;align-items:center;gap:8px;margin:6px 0 10px;font-size:.9rem}
+.check-row input{width:auto !important;min-width:0 !important}
+.badge-dto{background:rgba(226,87,76,.15);color:#ff8a7e;white-space:nowrap}
+.dto-linea{color:#ff8a7e}
+.link-btn{border:0;background:none;padding:2px 0;color:var(--gold);font-size:.78rem;text-decoration:underline;cursor:pointer}

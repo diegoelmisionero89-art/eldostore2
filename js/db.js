@@ -216,6 +216,7 @@ async function refreshAll() {
   DB.shipments = env.map(rowToShipment);
   if (cfg.data) DB.config = rowToConfig(cfg.data);
   await loadCuentas();
+  if (modoCuentas()) await cargarPromociones();
 }
 
 /* Carga cuentas, custodios, usuarios y repartos si la migración 003 está aplicada. */
@@ -865,6 +866,121 @@ async function vincularUsuario(email, holderId, activo = true) {
   const r = await rpcCuentas('vincular_usuario', { p_email: email, p_holder_id: holderId, p_activo: activo });
   CUENTAS.users = await fetchAll('app_users', { clave: 'user_id' });
   return r;
+}
+
+/* ----------------------- PROMOCIONES (migración 005) -----------------------
+   Banners, categorías visuales, descuentos y ofertas flash. Todo se escribe con
+   funciones de la base que exigen al administrador; el panel solo las llama.
+   Si la migración 005 no está instalada, PROMOS.disponible queda en false y
+   el panel funciona exactamente como antes. */
+const PROMOS = { disponible: false, esAdmin: false, offset: 0, en: null, banners: [], categorias: [], descuentos: [], flash: null };
+
+function funcionInexistente(e) { return /Could not find the function|does not exist|PGRST202|42883/i.test((e && e.message) || ''); }
+
+async function cargarPromociones() {
+  try {
+    const d = await rpcCuentas('promociones_panel', {});
+    PROMOS.disponible = true;
+    PROMOS.esAdmin = !!d.esAdmin;
+    PROMOS.offset = Date.parse(d.ahora) - Date.now();   // hora del servidor
+    PROMOS.banners = d.banners || [];
+    PROMOS.categorias = d.categorias || [];
+    PROMOS.descuentos = d.descuentos || [];
+    PROMOS.flash = d.flash || null;
+  } catch (e) {
+    PROMOS.disponible = false;
+    if (!funcionInexistente(e)) console.warn('No se pudieron leer las promociones:', e);
+  }
+  return PROMOS;
+}
+const ahoraServidor = () => Date.now() + PROMOS.offset;
+
+/* Descuento vigente de un producto (la regla la calcula la base: flash primero, después manual). */
+function descuentoVigente(productId, lista, momento) {
+  const d = (lista || PROMOS.descuentos).find(x => x.productoId === productId);
+  if (!d) return null;
+  if (d.vence && (momento || ahoraServidor()) >= Date.parse(d.vence)) return null;
+  return d;
+}
+/* Mismo cálculo que la base (eldo_precio_con_descuento): exacto del %, al peso. */
+function precioConDescuento(precio, porcentaje) {
+  return Math.round(Number(precio) * (100 - Number(porcentaje)) / 100);
+}
+/* Descuentos que valían en otra fecha (pedido hecho antes, hasta 7 días). */
+async function descuentosEn(fechaISO) {
+  const d = await rpcCuentas('promociones_panel', { p_en: fechaISO });
+  return d.descuentos || [];
+}
+
+async function rpcPromo(nombre, args) {
+  const r = await rpcCuentas(nombre, args);
+  await cargarPromociones();
+  return r;
+}
+const guardarBanner = b => rpcPromo('guardar_banner', {
+  p_id: b.id || null, p_ubicacion: b.ubicacion, p_imagen_url: b.imagen_url, p_texto_alt: b.texto_alt || '',
+  p_enlace_tipo: b.enlace_tipo || 'ninguno', p_enlace_valor: b.enlace_valor || '', p_activo: b.activo !== false });
+const ordenarBanners = (ubicacion, ids) => rpcPromo('ordenar_banners', { p_ubicacion: ubicacion, p_ids: ids });
+const eliminarBanner = id => rpcPromo('eliminar_banner', { p_id: id });
+async function guardarCategoria(c) {
+  const r = await rpcPromo('guardar_categoria', { p_id: c.id || null, p_nombre: c.nombre, p_imagen_url: c.imagen_url || '', p_visible: c.visible !== false });
+  if (r && r.productos_actualizados) await refreshProducts();
+  return r;
+}
+const ordenarCategorias = ids => rpcPromo('ordenar_categorias', { p_ids: ids });
+async function reasignarCategoria(origenId, destinoId) {
+  const r = await rpcPromo('reasignar_categoria', { p_origen_id: origenId, p_destino_id: destinoId });
+  await refreshProducts();
+  return r;
+}
+const eliminarCategoria = id => rpcPromo('eliminar_categoria', { p_id: id });
+const ponerDescuento = (productId, porcentaje, hasta) => rpcPromo('poner_descuento', { p_product_id: productId, p_porcentaje: Number(porcentaje), p_hasta: hasta || null });
+const quitarDescuento = productId => rpcPromo('quitar_descuento', { p_product_id: productId });
+const guardarOfertaFlash = o => rpcPromo('guardar_oferta_flash', { p_titulo: o.titulo, p_inicia: o.inicia, p_termina: o.termina, p_productos: o.productos });
+const terminarOfertaFlash = () => rpcPromo('terminar_oferta_flash', {});
+
+/* Sube una imagen de promoción achicándola en el teléfono antes de enviarla
+   (los banners a 1600 px de ancho, las categorías a 400 px). Mismo almacenamiento
+   que las fotos de productos, en las carpetas banners/ y categorias/. */
+async function subirImagenPromo(archivo, carpeta) {
+  if (!archivo || !/^image\//.test(archivo.type)) throw new Error('Elegí un archivo de imagen.');
+  if (archivo.size > 15 * 1024 * 1024) throw new Error('La imagen supera los 15 MB.');
+  const max = carpeta === 'categorias' ? 400 : 1600;
+  const transparente = carpeta === 'categorias' && archivo.type === 'image/png';
+  let blob = archivo, ext = (archivo.name.split('.').pop() || 'jpg').toLowerCase();
+  try {
+    const img = await new Promise((ok, mal) => {
+      const i = new Image(); i.onload = () => ok(i); i.onerror = mal; i.src = URL.createObjectURL(archivo);
+    });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    const ctx = c.getContext('2d');
+    if (!transparente) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); }
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(img.src);
+    blob = await new Promise(ok => c.toBlob(ok, transparente ? 'image/png' : 'image/jpeg', 0.85));
+    ext = transparente ? 'png' : 'jpg';
+  } catch (e) { /* si el navegador no puede achicarla, se sube tal cual */ }
+  const nombre = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const { error } = await sb.storage.from('productos-fotos').upload(nombre, blob, { contentType: blob.type || archivo.type, upsert: false });
+  if (error) throw new Error(error.message || 'No se pudo subir la imagen.');
+  return sb.storage.from('productos-fotos').getPublicUrl(nombre).data.publicUrl;
+}
+
+/* Venta con descuento: la base calcula el precio de las líneas con descuento
+   (no usa el que manda el panel) y guarda el detalle en ventas_descuentos. */
+async function registerSalePromocion({ clienteId, items, metodoPago, modalidad, holderId, fechaPedido }) {
+  try {
+    const p_items = saleItemsPayload(items, modalidad).map((l, i) =>
+      items[i].descuentoPct ? Object.assign(l, { descuento: { porcentaje: Number(items[i].descuentoPct) } }) : l);
+    const data = await rpcCuentas('registrar_venta_promocion', {
+      p_cliente_id: clienteId || null, p_items, p_metodo_pago: metodoPago || '', p_modalidad: modalidad,
+      p_holder_id: holderId || null, p_fecha_pedido: fechaPedido || null
+    });
+    await Promise.all([refreshProducts(), refreshSales(), refreshCash(), refreshRepartos()]);
+    return { venta: data };
+  } catch (e) { return { error: e.message }; }
 }
 
 /* ------------------------------- ENVÍOS ---------------------------------- */

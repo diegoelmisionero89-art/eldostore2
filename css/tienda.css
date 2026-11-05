@@ -497,3 +497,53 @@ body.lbx-open .ficha{overflow:hidden}
   .wa-pick{align-items:center}
   .wa-pick-box{border-radius:18px;padding-bottom:20px}
 }
+
+/* ---------- Promociones (migración 005) ---------- */
+/* Carrusel deslizable: banners principales y carrusel entre productos */
+.promo-hero{background:var(--ink)}
+.pcar{position:relative;overflow:hidden}
+.pcar-track{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;overscroll-behavior-x:contain;outline:none}
+.pcar-track::-webkit-scrollbar{display:none}
+.pcar-track:focus-visible{box-shadow:inset 0 0 0 3px var(--gold)}
+.pcar-slide{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always}
+.pcar-slide a{display:block}
+.pcar-slide img{display:block;width:100%;aspect-ratio:16/7;object-fit:cover;background:#111}
+.pcar-principal .pcar-slide img{max-height:min(560px,62vh)}
+.pcar-nav{position:absolute;top:50%;z-index:2;display:grid;place-items:center;width:40px;height:40px;margin-top:-20px;border:1px solid rgba(255,255,255,.25);border-radius:50%;background:rgba(8,8,8,.55);color:#fff;font-size:26px;line-height:1;cursor:pointer}
+.pcar-nav.prev{left:12px}.pcar-nav.next{right:12px}
+.pcar-nav:hover{border-color:var(--gold);color:var(--gold)}
+.pcar-dots{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;gap:7px;pointer-events:none}
+.pcar-dots button{width:9px;height:9px;padding:0;border:0;border-radius:50%;background:rgba(255,255,255,.55);box-shadow:0 0 0 1px rgba(0,0,0,.2);pointer-events:auto;cursor:pointer}
+.pcar-dots button[aria-current="true"]{width:22px;border-radius:5px;background:var(--gold)}
+.pcar-nav:focus-visible,.pcar-dots button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.promo-mid{grid-column:1/-1;margin:4px 0;border-radius:var(--r);overflow:hidden;box-shadow:0 3px 12px rgba(0,0,0,.1)}
+.promo-mid .pcar-slide img{aspect-ratio:16/5}
+@media (hover:none) and (pointer:coarse){.pcar-nav{display:none}}
+
+/* Categorías con imagen */
+.cat-img{padding-top:8px}
+.cat-pic{display:block;width:46px;height:46px;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.cat-pic img{width:100%;height:100%;object-fit:cover;display:block}
+.cat[aria-pressed="true"] .cat-pic{box-shadow:0 0 0 2px #fff}
+
+/* Ofertas flash */
+.flash{margin:16px 0 4px;padding:14px 0 6px;border-radius:16px;background:linear-gradient(135deg,var(--ink),#1c160b);color:#fff}
+.flash-hd{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 14px;padding:0 14px 10px}
+.flash-hd h2{margin:0;font-size:20px;color:var(--gold)}
+.flash-reloj-box{margin:0;font-size:13px;color:#d9d6de}
+.flash-reloj{font-variant-numeric:tabular-nums;font-size:15px;color:#fff}
+.flash-reloj b{display:inline-block;min-width:28px;padding:3px 5px;border-radius:6px;background:var(--gold);color:#15100a;text-align:center}
+.flash-track{display:flex;gap:10px;overflow-x:auto;padding:2px 14px 10px;scroll-snap-type:x mandatory;scrollbar-width:none;overscroll-behavior-x:contain}
+.flash-track::-webkit-scrollbar{display:none}
+.flash-track .card{flex:0 0 calc((100% - 50px) / 6);scroll-snap-align:start;color:var(--text)}
+@media (max-width:1280px){.flash-track .card{flex-basis:calc((100% - 40px) / 5)}}
+@media (max-width:1050px){.flash-track .card{flex-basis:calc((100% - 30px) / 4)}}
+@media (max-width:820px){.flash-track .card{flex-basis:calc((100% - 20px) / 3)}}
+@media (max-width:650px){
+  .flash{margin-left:calc(-1 * var(--gutter-l));margin-right:calc(-1 * var(--gutter-r));border-radius:0}
+  .flash-hd{padding:0 var(--gutter-r) 10px var(--gutter-l)}
+  .flash-track{padding:2px var(--gutter-r) 10px var(--gutter-l)}
+  .flash-track .card{flex-basis:44%}
+  .pcar-slide img{aspect-ratio:16/8}
+  .promo-mid .pcar-slide img{aspect-ratio:16/6}
+}

@@ -13,6 +13,12 @@
    - Galería: además de foto, lee las fotos adicionales con fotos_tienda()
      (migración 004). Si esa función no existe todavía, cada producto muestra
      solo su foto principal, como antes.
+   - Promociones (migración 005): banners, categorías visuales, ofertas flash
+     y descuentos se leen con promociones_tienda(). El precio habitual nunca
+     cambia; mientras un descuento está vigente, el precio mostrado, el del
+     carrito y el del mensaje de WhatsApp es el precio con descuento. Lo
+     vencido deja de aplicarse solo (hora del servidor). Si la función no
+     existe, la tienda se ve exactamente como antes.
    - Enlace para compartir una ficha: https://eldostore.com.ar/p/<código>/
      (página con la vista previa del producto, generada por el workflow
      "Fichas para compartir"), que lleva a ?p=<código>. Si el código tiene
@@ -107,7 +113,12 @@
         clave = n === 1 ? base : base + "#" + n;
       }
       const anterior = Number(r && r.precio_anterior);
+      const habitual = Number.isFinite(precio) && precio > 0 ? Math.round(precio) : null;
+      const anteriorBase = Number.isFinite(anterior) && anterior > 0 ? Math.round(anterior) : null;
       return {
+        precioHabitual: habitual,
+        precioAnteriorBase: anteriorBase,
+        descuento: null,
         clave,
         nombre,
         categoria: limpiar(r && r.categoria, 60),
@@ -246,7 +257,8 @@
   function mensajeProducto(p, inicio, conEnlace) {
     const r = [inicio, "", "Producto: " + p.nombre];
     if (p.codigo) r.push("Código: " + p.codigo);
-    r.push("Precio: " + (p.precio ? money(p.precio) : "a consultar"));
+    r.push("Precio: " + (p.precio ? money(p.precio) : "a consultar") +
+      (p.descuento ? ` (${p.descuento.porcentaje} % OFF, precio habitual ${money(p.precioHabitual)}${p.descuento.vence ? ", válido hasta " + fechaCorta(p.descuento.vence) : ""})` : ""));
     if (conEnlace) r.push("Enlace: " + enlaceCompartir(p));
     return r.join("\n");
   }
@@ -270,7 +282,7 @@
     const oferta = p.precio && p.precioAnterior && p.precioAnterior > p.precio;
     let tag = "";
     if (!p.disponible) tag = '<span class="tag grey">Sin stock</span>';
-    else if (oferta) tag = `<span class="tag red">${Math.round((1 - p.precio / p.precioAnterior) * 100)}% OFF</span>`;
+    else if (oferta) tag = `<span class="tag red">${pctOff(p)}% OFF</span>`;
     const precio = p.precio
       ? `<p class="price">${oferta ? `<span class="old">${money(p.precioAnterior)}</span>` : ""}${money(p.precio)}</p>`
       : `<p class="price na">Consultar precio</p>`;
@@ -308,7 +320,10 @@
     } else if (!lista.length) {
       grid.innerHTML = `<div class="state"><b>No encontramos productos${estado.texto ? " para “" + esc(estado.texto) + "”" : ""}.</b>Probá con otra palabra o mirá todos los productos.</div>`;
     } else {
-      grid.innerHTML = lista.map(tarjeta).join("");
+      const inter = PROMOS_T.datos ? PROMOS_T.datos.intermedios : [];
+      grid.innerHTML = lista.map((p, i) => tarjeta(p) +
+        (inter.length && (i + 1) % CADA_INTERMEDIO === 0 && i < lista.length - 1
+          ? `<div class="promo-mid">${carruselHTML(rotar(inter, Math.floor(i / CADA_INTERMEDIO)), "Promociones")}</div>` : "")).join("");
     }
     pedirUbicarWa();
   }
@@ -319,12 +334,13 @@
     return Array.from(cuenta.entries()).sort((a, b) => a[0].localeCompare(b[0], "es"));
   }
   function dibujarCategorias() {
-    const cats = categoriasReales();
+    const cats = categoriasOrdenadas();
     const fila = $("#cats");
     fila.hidden = cats.length === 0;
     fila.innerHTML =
       `<button class="cat" type="button" data-cat="" aria-pressed="${!estado.categoria}">${iconoCategoria("todos")}Ver todos</button>` +
-      cats.map(([c]) => `<button class="cat" type="button" data-cat="${esc(c)}" aria-pressed="${estado.categoria === c}">${iconoCategoria(c)}${esc(c)}</button>`).join("");
+      cats.map(([c, , img]) => `<button class="cat${img ? " cat-img" : ""}" type="button" data-cat="${esc(c)}" aria-pressed="${estado.categoria === c}">${img
+        ? `<span class="cat-pic"><img src="${esc(img)}" alt="" loading="lazy" decoding="async"></span>` : iconoCategoria(c)}${esc(c)}</button>`).join("");
     $("#catList").innerHTML =
       `<li><button type="button" data-cat="" aria-current="${!estado.categoria}">Ver todos los productos <span class="n">${PRODUCTOS.length}</span></button></li>` +
       cats.map(([c, n]) => `<li><button type="button" data-cat="${esc(c)}" aria-current="${estado.categoria === c}">${esc(c)} <span class="n">${n}</span></button></li>`).join("");
@@ -349,6 +365,8 @@
       r.push(`${l.q} × ${l.p.nombre}`);
       if (l.p.codigo) r.push(`Código: ${l.p.codigo}`);
       r.push(`— ${money(l.sub)} (${money(l.p.precio)} c/u)`);
+      if (l.p.descuento) r.push(`${l.p.descuento.porcentaje} % OFF · precio habitual ${money(l.p.precioHabitual)} c/u` +
+        (l.p.descuento.vence ? ` · válido hasta ${fechaCorta(l.p.descuento.vence)}` : ""));
     });
     r.push("", `Total estimado: ${money(total)} (sin envío)`);
     if (nombre) r.push(`Nombre: ${nombre}`);
@@ -407,7 +425,7 @@
     actualizarMensaje();
   }
 
-  function actualizarTodo() { dibujarEncabezado(); dibujarCatalogo(); dibujarCarrito(); if (typeof refrescarFicha === "function") refrescarFicha(); }
+  function actualizarTodo() { dibujarEncabezado(); dibujarCatalogo(); dibujarFlash(); dibujarCarrito(); if (typeof refrescarFicha === "function") refrescarFicha(); }
   let refrescarFicha = null;
   let catalogoListo = false;
 
@@ -503,7 +521,8 @@
 
   /* ---------- Eventos ---------- */
   const grid = $("#catalogo-productos");
-  grid.addEventListener("click", e => {
+  function clicCompra(e) {
+    const cont = e.currentTarget;
     const b = e.target.closest("button[data-act]"); if (!b) return;
     const card = b.closest(".card"); const k = card && card.dataset.k; const p = porClave.get(k);
     if (!sePuedeComprar(p)) return;
@@ -517,15 +536,20 @@
       if (nuevo === antes) { toast("Llegaste al máximo de " + CANTIDAD_MAX + " unidades de este producto."); return; }
       setCantidad(k, nuevo);
       toast("<b>Agregado:</b> " + (nuevo - antes) + " × " + esc(p.nombre));
-    } else dibujarCatalogo();
-    const again = grid.querySelector(`.card[data-k="${CSS.escape(k)}"] [data-act="${b.dataset.act}"]`);
+    } else { dibujarCatalogo(); dibujarFlash(); }
+    const again = cont.querySelector(`.card[data-k="${CSS.escape(k)}"] [data-act="${b.dataset.act}"]`);
     if (again && !again.disabled) again.focus();
-  });
+  }
+  grid.addEventListener("click", clicCompra);
+  $("#flashTrack").addEventListener("click", clicCompra);
   // Foto que no carga: se reemplaza por un fondo neutro
-  grid.addEventListener("error", e => {
+  function fotoCaida(e) {
     if (e.target.tagName !== "IMG") return;
+    const sl = e.target.closest(".pcar-slide"); if (sl) { sl.remove(); return; } // imagen de promoción que no carga
     const s = document.createElement("span"); s.className = "ph"; s.textContent = "ELDOSTORE"; e.target.replaceWith(s);
-  }, true);
+  }
+  grid.addEventListener("error", fotoCaida, true);
+  $("#flashTrack").addEventListener("error", fotoCaida, true);
 
   /* ---------- Ficha individual del producto ----------
      Se abre al tocar la foto o el nombre. Usa la dirección #producto/…,
@@ -609,7 +633,7 @@
       </section>` : "";
     ficha.innerHTML = barra + `<div class="f-wrap">
         <div class="f-main">
-          ${galeriaHTML(p, !p.disponible ? '<span class="tag grey">Sin stock</span>' : (oferta ? `<span class="tag red">${Math.round((1 - p.precio / p.precioAnterior) * 100)}% OFF</span>` : ""))}
+          ${galeriaHTML(p, !p.disponible ? '<span class="tag grey">Sin stock</span>' : (oferta ? `<span class="tag red">${pctOff(p)}% OFF</span>` : ""))}
           <div class="f-info">
             ${p.categoria ? `<p class="cat-lbl">${esc(p.categoria)}</p>` : ""}
             <h1 class="f-name" id="fName" tabindex="-1">${esc(p.nombre)}</h1>
@@ -1014,20 +1038,221 @@
     if (heroImg.complete && heroImg.naturalWidth === 0) $(".hero").classList.add("sin-foto");
   }
 
+  /* ---------- Promociones (migración 005) ----------
+     Banners, categorías visuales, ofertas flash, descuentos y carrusel entre
+     productos. Todo viene de promociones_tienda(); la hora es la del servidor. */
+  const CADA_INTERMEDIO = 14;
+  const PROMOS_T = { datos: null, offset: 0, leido: 0 };
+  let tVence = null;
+  const ahoraSrv = () => Date.now() + PROMOS_T.offset;
+  const reducirMov = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const fechaCorta = iso => new Date(iso).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires",
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(",", "");
+  function pctOff(p) {
+    if (p.descuento) return p.descuento.porcentaje;
+    return Math.round((1 - p.precio / p.precioAnterior) * 100);
+  }
+  const rotar = (arr, k) => arr.length ? arr.slice(k % arr.length).concat(arr.slice(0, k % arr.length)) : arr;
+
+  async function cargarPromosTienda() {
+    try {
+      const { data, error } = await cliente().rpc("promociones_tienda");
+      if (error || !data) { if (error) console.info("[ELDOSTORE] promociones_tienda() no disponible: la tienda se muestra sin promociones."); return null; }
+      return data;
+    } catch (e) { return null; }
+  }
+  function guardarPromos(d) {
+    PROMOS_T.leido = Date.now();
+    if (!d) { PROMOS_T.datos = null; aplicarDescuentos(); return; }
+    PROMOS_T.offset = Date.parse(d.ahora) - Date.now() || 0;
+    const ok = x => x && /^https:\/\/[^\s"'<>]+$/i.test(x.imagen || "");
+    PROMOS_T.datos = {
+      banners: (d.banners || []).filter(ok),
+      intermedios: (d.intermedios || []).filter(ok),
+      categorias: Array.isArray(d.categorias) ? d.categorias : [],
+      ocultas: new Set(Array.isArray(d.ocultas) ? d.ocultas : []),
+      descuentos: Array.isArray(d.descuentos) ? d.descuentos : [],
+      flash: d.flash && Array.isArray(d.flash.productos) ? d.flash : null
+    };
+    aplicarDescuentos();
+  }
+  // Precio vigente: habitual, o con descuento mientras no venció. Al peso, igual que la base.
+  function aplicarDescuentos() {
+    const porId = new Map(PRODUCTOS.filter(p => p.id).map(p => [p.id, p]));
+    for (const p of PRODUCTOS) { p.precio = p.precioHabitual; p.precioAnterior = p.precioAnteriorBase; p.descuento = null; }
+    const ahora = ahoraSrv();
+    for (const d of PROMOS_T.datos ? PROMOS_T.datos.descuentos : []) {
+      const p = porId.get(String(d.productoId)); const pct = Number(d.porcentaje);
+      if (!p || !p.precioHabitual || !(pct >= 1 && pct <= 90)) continue;
+      if (d.vence && ahora >= Date.parse(d.vence)) continue;
+      p.precio = Math.round(p.precioHabitual * (100 - pct) / 100);
+      p.precioAnterior = p.precioHabitual;
+      p.descuento = { porcentaje: pct, origen: d.origen, vence: d.vence || null };
+    }
+    programarVencimiento();
+  }
+  // Se vuelve a calcular justo cuando vence la próxima oferta (y se consulta otra vez la base).
+  function programarVencimiento() {
+    clearTimeout(tVence);
+    const fechas = PRODUCTOS.filter(p => p.descuento && p.descuento.vence).map(p => Date.parse(p.descuento.vence));
+    if (PROMOS_T.datos && PROMOS_T.datos.flash) fechas.push(Date.parse(PROMOS_T.datos.flash.termina));
+    if (!fechas.length) return;
+    const espera = Math.min(...fechas) - ahoraSrv() + 300;
+    tVence = setTimeout(() => refrescarPromos(true), Math.max(0, Math.min(espera, 2147483000)));
+  }
+  function hayPreciosVencidos() {
+    const ahora = ahoraSrv();
+    return PRODUCTOS.some(p => p.descuento && p.descuento.vence && ahora >= Date.parse(p.descuento.vence));
+  }
+  async function refrescarPromos(venc) {
+    const d = await cargarPromosTienda();
+    if (d) guardarPromos(d);
+    else if (PROMOS_T.datos) aplicarDescuentos();   // sin conexión: igual se quita lo vencido
+    dibujarPromos();
+    actualizarTodo();
+    if (venc) aviso("Terminó una oferta: actualizamos los precios.");
+  }
+
+  /* Carrusel deslizable (banners principales y entre productos) */
+  function enlaceBanner(b) {
+    if (b.enlaceTipo === "producto") {
+      const p = PRODUCTOS.find(x => x.codigo && x.codigo === b.enlace);
+      return p ? `href="${enlaceFicha(p)}"` : "";
+    }
+    if (b.enlaceTipo === "categoria") return `href="#productos" data-cat-banner="${esc(b.enlace)}"`;
+    if (b.enlaceTipo === "url" && /^https:\/\/[^\s"'<>]+$/i.test(b.enlace)) return `href="${esc(b.enlace)}" target="_blank" rel="noopener noreferrer"`;
+    return "";
+  }
+  function carruselHTML(slides, etiqueta, principal) {
+    const n = slides.length;
+    return `<div class="pcar${principal ? " pcar-principal" : ""}" role="region" aria-roledescription="carrusel" aria-label="${esc(etiqueta)}">
+      <div class="pcar-track" tabindex="0">${slides.map((b, i) => {
+        const href = enlaceBanner(b);
+        const img = `<img src="${esc(b.imagen)}" alt="${esc(b.alt || "")}" ${i && !principal ? 'loading="lazy"' : ""} ${principal && !i ? 'fetchpriority="high"' : ""} decoding="async">`;
+        return `<div class="pcar-slide" role="group" aria-roledescription="imagen" aria-label="${i + 1} de ${n}">${href ? `<a ${href}>${img}</a>` : img}</div>`;
+      }).join("")}</div>
+      ${n > 1 ? `<button type="button" class="pcar-nav prev" data-pcar="-1" aria-label="Imagen anterior">‹</button>
+      <button type="button" class="pcar-nav next" data-pcar="1" aria-label="Imagen siguiente">›</button>
+      <div class="pcar-dots">${slides.map((_, i) => `<button type="button" data-pcar-ir="${i}" aria-label="Ver imagen ${i + 1}" aria-current="${i === 0}"></button>`).join("")}</div>` : ""}
+    </div>`;
+  }
+  function irA(car, i) {
+    const t = car.querySelector(".pcar-track"); const n = t.children.length; if (!n) return;
+    const k = (i + n) % n;
+    t.scrollTo({ left: k * t.clientWidth, behavior: reducirMov() ? "auto" : "smooth" });
+  }
+  const indice = t => Math.round(t.scrollLeft / Math.max(1, t.clientWidth));
+  document.addEventListener("click", e => {
+    const nav = e.target.closest("[data-pcar], [data-pcar-ir]");
+    if (nav) {
+      const car = nav.closest(".pcar"); car.dataset.pausa = Date.now();
+      irA(car, nav.dataset.pcarIr !== undefined ? Number(nav.dataset.pcarIr) : indice(car.querySelector(".pcar-track")) + Number(nav.dataset.pcar));
+      return;
+    }
+    const cat = e.target.closest("[data-cat-banner]");
+    if (cat) { e.preventDefault(); elegirCategoria(cat.dataset.catBanner); dibujarCategorias(); $("#productos").scrollIntoView({ behavior: reducirMov() ? "auto" : "smooth" }); }
+  });
+  document.addEventListener("scroll", e => {
+    const t = e.target;
+    if (!(t instanceof Element) || !t.classList.contains("pcar-track")) return;
+    const i = indice(t);
+    t.parentElement.querySelectorAll(".pcar-dots button").forEach((d, k) => d.setAttribute("aria-current", String(k === i)));
+  }, true);
+  ["pointerdown", "touchstart", "focusin", "mouseenter"].forEach(ev => document.addEventListener(ev, e => {
+    const car = e.target instanceof Element && e.target.closest(".pcar"); if (car) car.dataset.pausa = Date.now();
+  }, { passive: true, capture: true }));
+  // Avance automático cada 5 s (pausa 8 s después de tocarlo; nunca con "reducir movimiento")
+  setInterval(() => {
+    if (reducirMov() || document.hidden) return;
+    document.querySelectorAll(".pcar").forEach(car => {
+      const t = car.querySelector(".pcar-track"); if (!t || t.children.length < 2) return;
+      if (Date.now() - Number(car.dataset.pausa || 0) < 8000) return;
+      const r = car.getBoundingClientRect(); if (r.bottom < 0 || r.top > innerHeight) return;
+      irA(car, indice(t) + 1);
+    });
+  }, 5000);
+
+  function dibujarPromos() {
+    const d = PROMOS_T.datos;
+    const hero = $(".hero"), ph = $("#promoHero");
+    const conBanners = !!(d && d.banners.length);
+    const nuevo = conBanners ? JSON.stringify(d.banners) : "";
+    if (ph.dataset.v !== nuevo) { ph.innerHTML = conBanners ? carruselHTML(d.banners, "Promociones de ELDOSTORE", true) : ""; ph.dataset.v = nuevo; }
+    ph.hidden = !conBanners;
+    if (hero) hero.hidden = conBanners;
+    dibujarCategorias();
+    dibujarFlash();
+  }
+
+  /* Categorías: orden, imagen y ocultas desde el panel. Las que no están en el panel
+     se agregan al final, como antes. */
+  function categoriasOrdenadas() {
+    const reales = categoriasReales();
+    const d = PROMOS_T.datos;
+    if (!d) return reales.map(([c, n]) => [c, n, ""]);
+    const cuenta = new Map(reales);
+    const out = [];
+    for (const c of d.categorias) if (cuenta.has(c.nombre)) { out.push([c.nombre, cuenta.get(c.nombre), /^https:\/\//i.test(c.imagen || "") ? c.imagen : ""]); cuenta.delete(c.nombre); }
+    for (const [c, n] of cuenta) if (!d.ocultas.has(c)) out.push([c, n, ""]);
+    return out;
+  }
+
+  /* Ofertas flash: carrusel con temporizador (hora del servidor) */
+  let tReloj = null;
+  function dibujarFlash() {
+    const sec = $("#flash"), f = PROMOS_T.datos && PROMOS_T.datos.flash;
+    const prods = f ? f.productos.map(id => PRODUCTOS.find(p => p.id === String(id))).filter(p => p && p.descuento && p.descuento.origen === "flash") : [];
+    const vigente = f && prods.length && Date.parse(f.termina) > ahoraSrv();
+    sec.hidden = !vigente;
+    clearInterval(tReloj);
+    if (!vigente) { $("#flashTrack").innerHTML = ""; return; }
+    $("#flashTitulo").textContent = f.titulo || "Ofertas flash";
+    $("#flashTrack").innerHTML = prods.map(tarjeta).join("");
+    const reloj = () => {
+      const ms = Date.parse(f.termina) - ahoraSrv();
+      if (ms <= 0) { clearInterval(tReloj); refrescarPromos(true); return; }
+      const t = Math.floor(ms / 1000), dd = Math.floor(t / 86400), hh = Math.floor(t % 86400 / 3600), mm = Math.floor(t % 3600 / 60), ss = t % 60;
+      const z = n => String(n).padStart(2, "0");
+      $("#flashReloj").innerHTML = (dd ? `<b>${dd}</b>d ` : "") + `<b>${z(hh)}</b>:<b>${z(mm)}</b>:<b>${z(ss)}</b>`;
+      $("#flashReloj").setAttribute("aria-label", "Termina en " + (dd ? dd + " días, " : "") + hh + " horas y " + mm + " minutos");
+    };
+    reloj(); tReloj = setInterval(reloj, 1000);
+  }
+
+  // Antes de abrir WhatsApp: si una oferta venció, se actualizan los precios y no se envía el precio viejo.
+  document.addEventListener("click", e => {
+    const a = e.target.closest("#btnSend, .wa-op, .f-wa, .sh-wa");
+    if (!a || !hayPreciosVencidos()) return;
+    e.preventDefault(); e.stopPropagation();
+    aplicarDescuentos(); dibujarPromos(); actualizarTodo();
+    if (typeof cerrarElegirWa === "function") cerrarElegirWa(false);
+    const s = $("#sendStatus");
+    if (s) { s.textContent = "Terminó una oferta y actualizamos los precios. Revisá el total y volvé a tocar Enviar."; s.hidden = false; }
+    toast("Terminó una oferta: actualizamos los precios.");
+    refrescarPromos(false);
+  }, true);
+  // Se vuelve a consultar cada 5 minutos y al volver a la página
+  setInterval(() => { if (catalogoListo && !document.hidden) refrescarPromos(false); }, 5 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && catalogoListo && Date.now() - PROMOS_T.leido > 60 * 1000) refrescarPromos(false);
+  });
+
   /* ---------- Inicio ---------- */
   async function iniciar() {
     const g = $("#catalogo-productos");
     g.setAttribute("aria-busy", "true");
     g.innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div><div class="skel"></div>';
     try {
-      const [filas, extras] = await Promise.all([cargarCatalogo(), cargarFotosExtra()]);
+      const [filas, extras, promos] = await Promise.all([cargarCatalogo(), cargarFotosExtra(), cargarPromosTienda()]);
       PRODUCTOS = prepararCatalogo(filas);
       aplicarFotosExtra(PRODUCTOS, extras);
       porClave = new Map(PRODUCTOS.map(p => [p.clave, p]));
+      guardarPromos(promos);
       carrito = leerCarrito();
       conciliarCarrito();
       dibujarCategorias();
       actualizarTodo();
+      dibujarPromos();
       catalogoListo = true;
       resolverEnlaceCompartido();
       enrutar();
