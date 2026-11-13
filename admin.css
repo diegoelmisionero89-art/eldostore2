@@ -227,3 +227,14 @@ body:not(.modo-promos) .solo-promos{display:none !important}
 .badge-dto{background:rgba(226,87,76,.15);color:#ff8a7e;white-space:nowrap}
 .dto-linea{color:#ff8a7e}
 .link-btn{border:0;background:none;padding:2px 0;color:var(--gold);font-size:.78rem;text-decoration:underline;cursor:pointer}
+
+/* Vista previa de fotos optimizadas antes de subir (imagenes.js) */
+.img-actual{display:block;width:96px;height:96px;object-fit:contain;background:#fff;border-radius:10px;margin:4px 0 8px}
+.img-prev{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--dark)}
+.img-prev[hidden]{display:none}
+.img-prev-foto{display:block;max-width:100%;max-height:260px;margin:0 auto 8px;border-radius:8px;background:#fff;object-fit:contain}
+.img-prev-info{font-size:.85rem;line-height:1.4;color:var(--muted)}
+.img-prev-info small{display:block;margin-top:2px;color:var(--muted)}
+.img-prev-info.ok{color:var(--green)}
+.img-prev-info.aviso{color:var(--gold2)}
+.img-prev-info.error{color:var(--red)}

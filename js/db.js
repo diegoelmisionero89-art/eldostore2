@@ -939,33 +939,13 @@ const quitarDescuento = productId => rpcPromo('quitar_descuento', { p_product_id
 const guardarOfertaFlash = o => rpcPromo('guardar_oferta_flash', { p_titulo: o.titulo, p_inicia: o.inicia, p_termina: o.termina, p_productos: o.productos });
 const terminarOfertaFlash = () => rpcPromo('terminar_oferta_flash', {});
 
-/* Sube una imagen de promoción achicándola en el teléfono antes de enviarla
-   (los banners a 1600 px de ancho, las categorías a 400 px). Mismo almacenamiento
-   que las fotos de productos, en las carpetas banners/ y categorias/. */
-async function subirImagenPromo(archivo, carpeta) {
-  if (!archivo || !/^image\//.test(archivo.type)) throw new Error('Elegí un archivo de imagen.');
-  if (archivo.size > 15 * 1024 * 1024) throw new Error('La imagen supera los 15 MB.');
-  const max = carpeta === 'categorias' ? 400 : 1600;
-  const transparente = carpeta === 'categorias' && archivo.type === 'image/png';
-  let blob = archivo, ext = (archivo.name.split('.').pop() || 'jpg').toLowerCase();
-  try {
-    const img = await new Promise((ok, mal) => {
-      const i = new Image(); i.onload = () => ok(i); i.onerror = mal; i.src = URL.createObjectURL(archivo);
-    });
-    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-    const c = document.createElement('canvas');
-    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
-    const ctx = c.getContext('2d');
-    if (!transparente) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); }
-    ctx.drawImage(img, 0, 0, c.width, c.height);
-    URL.revokeObjectURL(img.src);
-    blob = await new Promise(ok => c.toBlob(ok, transparente ? 'image/png' : 'image/jpeg', 0.85));
-    ext = transparente ? 'png' : 'jpg';
-  } catch (e) { /* si el navegador no puede achicarla, se sube tal cual */ }
-  const nombre = `${carpeta}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-  const { error } = await sb.storage.from('productos-fotos').upload(nombre, blob, { contentType: blob.type || archivo.type, upsert: false });
-  if (error) throw new Error(error.message || 'No se pudo subir la imagen.');
-  return sb.storage.from('productos-fotos').getPublicUrl(nombre).data.publicUrl;
+/* Sube una imagen de promoción (banners a 1600 px, categorías a 400 px).
+   La optimización (WebP, o JPEG en Safari) está en imagenes.js. Acepta un
+   archivo o una imagen ya optimizada por la vista previa. */
+async function subirImagenPromo(archivoOImagen, carpeta) {
+  const tipo = carpeta === 'categorias' ? 'categoria' : 'banner';
+  const lista = archivoOImagen && archivoOImagen.blob ? archivoOImagen : await optimizarImagen(archivoOImagen, tipo);
+  return subirImagenOptimizada(lista, tipo);
 }
 
 /* Venta con descuento: la base calcula el precio de las líneas con descuento

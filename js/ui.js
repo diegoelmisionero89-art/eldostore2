@@ -303,9 +303,11 @@ function openProductModal(id) {
       ${p ? '<small>Las ventas anteriores conservan su dueño. El cambio queda registrado con el stock y su valor.</small>' : ''}</div>` : ''}
     
         <div class="field">
-          <label>Foto del producto</label>
+          <label>${p && p.foto ? 'Foto del producto (elegí una nueva solo si querés reemplazarla)' : 'Foto del producto'}</label>
+          ${p && p.foto ? `<img src="${esc(p.foto)}" alt="Foto actual" class="img-actual" loading="lazy">` : ''}
           <input type="file" id="f_foto" accept="image/jpeg,image/png,image/webp">
-          <small>Formatos permitidos: JPG, PNG y WebP. Máximo 5 MB.</small>
+          <small>JPG, PNG o WebP de hasta 15 MB. Se optimiza sola antes de subir (máx. 1200 px).</small>
+          <div id="f_foto_prev" class="img-prev" hidden></div>
         </div>
 
     <div class="two-col">
@@ -321,6 +323,7 @@ function openProductModal(id) {
       <button class="btn btn-primary btn-sm" id="saveProductBtn" onclick="saveProduct('${p ? p.id : ''}')">Guardar</button>
     </div>
   `);
+  conectarVistaPrevia('f_foto', 'producto', 'f_foto_prev');
 }
 
 async function saveProduct(id) {
@@ -346,41 +349,18 @@ async function saveProduct(id) {
     }
   }
    
-  const archivoFoto = document.getElementById('f_foto').files[0];
-  if (archivoFoto) {
-    if (!archivoFoto.type.startsWith('image/')) {
-      showToast('Seleccioná un archivo de imagen.');
-      return;
-    }
-    if (archivoFoto.size > 5 * 1024 * 1024) {
-      showToast('La imagen no puede superar los 5 MB.');
-      return;
-    }
-  }
-
   if (!data.nombre) { showToast('El nombre es obligatorio.'); return; }
   const btn = document.getElementById('saveProductBtn');
-  btn.disabled = true; btn.textContent = 'Guardando...';
+  btn.disabled = true; btn.textContent = 'Preparando foto...';
+
+  // La foto se optimiza al elegirla; si no se pudo, se avisa y no se guarda nada.
+  let fotoLista = null;
+  try { fotoLista = await imagenElegida('f_foto', 'producto'); }
+  catch (e) { showToast(e.message); btn.disabled = false; btn.textContent = 'Guardar'; return; }
+
+  btn.textContent = 'Guardando...';
   try {
-     
-    if (archivoFoto) {
-      const extension = archivoFoto.name.split('.').pop().toLowerCase();
-      const nombreArchivo = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
-      const { error: errorFoto } = await sb.storage
-        .from('productos-fotos')
-        .upload(nombreArchivo, archivoFoto, {
-          contentType: archivoFoto.type,
-          upsert: false
-        });
-
-      if (errorFoto) throw errorFoto;
-
-      const { data: fotoPublica } = sb.storage
-        .from('productos-fotos')
-        .getPublicUrl(nombreArchivo);
-
-      data.foto = fotoPublica.publicUrl;
-    }
+    if (fotoLista) data.foto = await subirImagenOptimizada(fotoLista, 'producto');
 
     if (id) {
       await updateProduct(id, data);
@@ -1701,16 +1681,34 @@ function enlaceTexto(b) {
   if (b.enlace_tipo === 'url') return 'Abre ' + esc(b.enlace_valor);
   return 'Sin enlace';
 }
+/* Al elegir la imagen se muestra la vista previa optimizada; se sube recién al tocar "Agregar". */
 async function agregarBannerUI(ubicacion, input) {
   const f = input.files[0]; input.value = ''; if (!f) return;
+  openModal(`
+    <h3>Agregar imagen</h3>
+    <div id="bnNuevoPrev" class="img-prev"></div>
+    <div class="modal-actions">
+      <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="bnNuevoBtn" disabled onclick="confirmarBannerUI('${ubicacion}')">Agregar</button>
+    </div>`);
+  agregarBannerUI._img = null;
+  try {
+    agregarBannerUI._img = await mostrarVistaPrevia(f, 'banner', document.getElementById('bnNuevoPrev'));
+    document.getElementById('bnNuevoBtn').disabled = false;
+  } catch (e) { /* el aviso ya está en la vista previa */ }
+}
+async function confirmarBannerUI(ubicacion) {
+  const img = agregarBannerUI._img; if (!img) return;
+  const btn = document.getElementById('bnNuevoBtn'); btn.disabled = true; btn.textContent = 'Subiendo…';
   const activos = PROMOS.banners.filter(b => b.ubicacion === ubicacion && b.activo).length;
   try {
-    showToast('Subiendo imagen…');
-    const url = await subirImagenPromo(f, 'banners');
+    const url = await subirImagenPromo(img, 'banners');
     await guardarBanner({ ubicacion, imagen_url: url, activo: !(ubicacion === 'principal' && activos >= 7) });
+    agregarBannerUI._img = null;
+    closeModal();
     showToast(ubicacion === 'principal' && activos >= 7 ? 'Imagen agregada como inactiva (ya hay 7 activas).' : 'Imagen agregada.');
     renderTienda();
-  } catch (e) { showError(e); }
+  } catch (e) { showError(e); btn.disabled = false; btn.textContent = 'Agregar'; }
 }
 async function moverBanner(ubicacion, i, dir) {
   const ids = PROMOS.banners.filter(b => b.ubicacion === ubicacion).map(b => b.id);
@@ -1730,7 +1728,8 @@ function editarBannerUI(id) {
   openModal(`
     <h3>Editar imagen</h3>
     <img src="${esc(b.imagen_url)}" alt="" id="bn_prev" class="promo-thumb wide" style="margin-bottom:10px">
-    <div class="field"><label>Reemplazar imagen</label><input type="file" accept="image/*" id="bn_file"></div>
+    <div class="field"><label>Reemplazar imagen</label><input type="file" accept="image/*" id="bn_file">
+      <div id="bn_file_prev" class="img-prev" hidden></div></div>
     <div class="field"><label>Texto alternativo (para lectores de pantalla)</label><input id="bn_alt" maxlength="160" value="${esc(b.texto_alt)}"></div>
     <div class="field"><label>Al tocar la imagen</label>
       <select id="bn_tipo" onchange="camposEnlace()">
@@ -1744,6 +1743,7 @@ function editarBannerUI(id) {
       <button class="btn btn-primary btn-sm" id="bnBtn" onclick="guardarBannerUI('${b.id}')">Guardar</button>
     </div>`);
   camposEnlace(b.enlace_valor);
+  conectarVistaPrevia('bn_file', 'banner', 'bn_file_prev');
 }
 function camposEnlace(valor) {
   const tipo = document.getElementById('bn_tipo').value, box = document.getElementById('bn_valorBox');
@@ -1761,9 +1761,11 @@ async function guardarBannerUI(id) {
   if (tipo === 'producto' && !DB.products.some(p => p.codigo === valor)) { showToast('No existe un producto con ese código.'); return; }
   if (tipo === 'url' && !/^https:\/\/\S+$/.test(valor)) { showToast('La dirección tiene que empezar con https://'); return; }
   const btn = document.getElementById('bnBtn'); btn.disabled = true;
+  let img = null;
+  try { img = await imagenElegida('bn_file', 'banner'); }
+  catch (e) { showToast(e.message); btn.disabled = false; return; }
   try {
-    const f = document.getElementById('bn_file').files[0];
-    const url = f ? await subirImagenPromo(f, 'banners') : b.imagen_url;
+    const url = img ? await subirImagenPromo(img, 'banners') : b.imagen_url;
     await guardarBanner(Object.assign({}, b, { imagen_url: url, texto_alt: document.getElementById('bn_alt').value,
       enlace_tipo: tipo, enlace_valor: tipo === 'ninguno' ? '' : valor, activo: document.getElementById('bn_activo').checked }));
     closeModal(); showToast('Imagen guardada.'); renderTienda();
@@ -1809,12 +1811,14 @@ function editarCategoriaUI(id) {
       ${c && c.productos ? `<small>Si cambiás el nombre, se actualiza en sus ${c.productos} producto(s). No cambian precios ni stock.</small>` : ''}</div>
     ${c && c.imagen_url ? `<img src="${esc(c.imagen_url)}" alt="" class="promo-thumb" style="margin-bottom:8px">
       <label class="check-row"><input type="checkbox" id="ct_sinImagen"> Quitar la imagen</label>` : ''}
-    <div class="field"><label>${c && c.imagen_url ? 'Reemplazar imagen' : 'Imagen (opcional)'}</label><input type="file" accept="image/*" id="ct_file"></div>
+    <div class="field"><label>${c && c.imagen_url ? 'Reemplazar imagen' : 'Imagen (opcional)'}</label><input type="file" accept="image/*" id="ct_file">
+      <div id="ct_file_prev" class="img-prev" hidden></div></div>
     <label class="check-row"><input type="checkbox" id="ct_visible" ${!c || c.visible ? 'checked' : ''}> Visible en la tienda</label>
     <div class="modal-actions">
       <button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary btn-sm" id="ctBtn" onclick="guardarCategoriaUI('${c ? c.id : ''}')">Guardar</button>
     </div>`);
+  conectarVistaPrevia('ct_file', 'categoria', 'ct_file_prev');
 }
 async function guardarCategoriaUI(id) {
   const c = id ? PROMOS.categorias.find(x => x.id === id) : null;
@@ -1822,10 +1826,12 @@ async function guardarCategoriaUI(id) {
   if (!nombre) { showToast('Escribí el nombre.'); return; }
   if (c && c.productos && nombre !== c.nombre && !confirm(`Se va a cambiar "${c.nombre}" por "${nombre}" en ${c.productos} producto(s). ¿Continuar?`)) return;
   const btn = document.getElementById('ctBtn'); btn.disabled = true;
+  let img = null;
+  try { img = await imagenElegida('ct_file', 'categoria'); }
+  catch (e) { showToast(e.message); btn.disabled = false; return; }
   try {
-    const f = document.getElementById('ct_file').files[0];
     const quitar = document.getElementById('ct_sinImagen') && document.getElementById('ct_sinImagen').checked;
-    const url = f ? await subirImagenPromo(f, 'categorias') : (quitar ? '' : (c ? c.imagen_url : ''));
+    const url = img ? await subirImagenPromo(img, 'categorias') : (quitar ? '' : (c ? c.imagen_url : ''));
     const r = await guardarCategoria({ id: id || null, nombre, imagen_url: url, visible: document.getElementById('ct_visible').checked });
     closeModal(); populateCategorySelects();
     showToast(r && r.productos_actualizados ? `Categoría guardada. ${r.productos_actualizados} producto(s) actualizados.` : 'Categoría guardada.');
