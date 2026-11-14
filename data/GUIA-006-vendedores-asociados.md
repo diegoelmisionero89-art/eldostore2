@@ -10,7 +10,7 @@ Rama: `vendedores-asociados-v1`. **No está publicada ni instalada en producció
 | Reversión | `data/migracion-006-revertir.sql` | Quita solo lo de la 006. Se niega si hay datos cargados. |
 | Panel | `js/asociados.js`, `admin.html`, `admin.css`, cambios mínimos en `js/ui.js`, `js/db.js`, `js/imagenes.js` | Menú «🏪 Tiendas asociadas»: vendedores, productos (con aprobación), ventas y comisiones. |
 | Tienda | `js/asociadas.js`, `index.html`, `css/tienda.css` | Sección «Tiendas asociadas», tienda de cada vendedor, ficha y pedido por WhatsApp al vendedor. |
-| Pruebas | `herramientas/prueba-006/` | Prueba de la base (51 controles) y de punta a punta en navegador (28 controles), en una base descartable con la caja real (cuentas, custodios y anulaciones). |
+| Pruebas | `herramientas/prueba-006/` | Prueba de la base (66 controles) y de punta a punta en navegador (31 controles), en una base descartable con la caja real (cuentas, custodios y anulaciones). |
 
 Lo que **no** toca: `products`, precios, stock, ventas, compras, gastos, cuentas, usuarios,
 promociones, `catalogo_tienda()` ni `promociones_tienda()`. De la caja no cambia estructura ni
@@ -66,6 +66,28 @@ La venta asociada guarda `comision_cobrada_en` y `comision_mov_id` (el movimient
   stock exacto, notas internas, comisiones ni ventas.
 - **Fotos:** se optimizan solas antes de subir (logos 400 px en `vendedores/`, productos 1200 px en
   `asociados/`, dentro del bucket `productos-fotos`). El sistema de respaldos ya las incluye.
+
+## Indicadores (solo administrador)
+
+Los calcula la base con `mkt_indicadores(desde, hasta, vendedor)`, solo para el administrador. Se ven en
+**Tiendas asociadas → Ventas y comisiones** (filtros: vendedor, desde, hasta) y en **Reportes** (panel
+«Ingresos de ELDOSTORE: ventas propias + Marketplace», con las fechas del reporte y filtro de vendedor).
+
+| Indicador | Cómo se calcula |
+|---|---|
+| Ganancia por ventas propias | El cálculo de siempre de Reportes (ganancia bruta), sin cambios |
+| Comisiones generadas | Suma de comisiones de las ventas asociadas del período, sin anuladas |
+| Comisiones cobradas | De esas, las marcadas «cobradas» (son las que entraron a la caja) |
+| Comisiones pendientes | De esas, las que falta cobrar. Generadas = cobradas + pendientes |
+| Ingresos por ventas propias | Ventas de la tienda del reporte (propias y por revendedor) |
+| Ingresos por comisiones del Marketplace | Comisiones generadas |
+| Ingresos totales de ELDOSTORE | Ventas propias + comisiones. Las ventas completas de los asociados NO se suman |
+| Vendido por los asociados | Solo informativo (no es ingreso de ELDOSTORE) |
+| Control de caja | Lo que entró a la caja por comisiones en el período, por fecha de cobro |
+
+Sin doble conteo: los indicadores salen de `mkt_ventas` (una fila por venta); el movimiento de caja es
+solo el registro del cobro y no se suma otra vez. Los usuarios que no son administradores no ven ventas
+asociadas, comisiones ni indicadores (ni por el panel ni leyendo la tabla).
 
 ## Poner en producción (cada paso con autorización de Diego)
 

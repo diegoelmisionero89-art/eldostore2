@@ -65,7 +65,7 @@ function enlaceTiendaPublica(v) { return 'index.html#tiendas/' + encodeURICompon
 
 /* ------------------------------- Vista ---------------------------------- */
 let mktTab = 'vendedores';
-const mktFiltro = { vendedor: '', estado: '', q: '', ventasVendedor: '', ventasMes: '', verAnuladas: false };
+const mktFiltro = { vendedor: '', estado: '', q: '', ventasVendedor: '', ventasDesde: '', ventasHasta: '', verAnuladas: false };
 
 function renderAsociados() {
   const el = document.getElementById('asociadosContenido'); if (!el) return;
@@ -75,7 +75,9 @@ function renderAsociados() {
     return;
   }
   const pend = MKT.productos.filter(p => p.estado === 'pendiente').length;
-  const tabs = [['vendedores', `Vendedores (${MKT.vendedores.length})`], ['productos', `Productos${pend ? ` · ${pend} por aprobar` : ''}`], ['ventas', 'Ventas y comisiones']];
+  const tabs = [['vendedores', `Vendedores (${MKT.vendedores.length})`], ['productos', `Productos${pend ? ` · ${pend} por aprobar` : ''}`]];
+  if (MKT.esAdmin) tabs.push(['ventas', 'Ventas y comisiones']);   // información financiera: solo el administrador
+  else if (mktTab === 'ventas') mktTab = 'vendedores';
   const aviso = MKT.esAdmin ? '' : '<div class="notice">Solo el administrador puede hacer cambios. Vos podés ver la información.</div>';
   el.innerHTML = `<div class="tabs" role="tablist">${tabs.map(([k, t]) =>
       `<button type="button" role="tab" class="tab${mktTab === k ? ' on' : ''}" aria-selected="${mktTab === k}" onclick="mktTab='${k}';renderAsociados()">${t}</button>`).join('')}</div>`
@@ -326,39 +328,54 @@ async function eliminarProductoMkt(id) {
 }
 
 /* ------------------------- Ventas y comisiones --------------------------- */
+/* Fecha de Argentina de una venta (igual que la base: America/Argentina/Buenos_Aires). */
+const fechaAR = iso => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
 function ventasFiltradasMkt(conAnuladas) {
   return MKT.ventas.filter(s => (conAnuladas || !s.anulada)
     && (!mktFiltro.ventasVendedor || s.vendedor_id === mktFiltro.ventasVendedor)
-    && (!mktFiltro.ventasMes || String(s.fecha).slice(0, 7) === mktFiltro.ventasMes));
+    && (!mktFiltro.ventasDesde || fechaAR(s.fecha) >= mktFiltro.ventasDesde)
+    && (!mktFiltro.ventasHasta || fechaAR(s.fecha) <= mktFiltro.ventasHasta));
+}
+/* Indicadores del Marketplace: los calcula la base (mkt_indicadores, solo administrador). */
+async function indicadoresMkt(desde, hasta, vendedor) {
+  return await rpcCuentas('mkt_indicadores', { p_desde: desde || null, p_hasta: hasta || null, p_vendedor: vendedor || null });
+}
+function htmlIndicadoresMkt(d) {
+  return `<div class="grid grid-4" style="margin-bottom:12px">
+      ${kpiBox('Comisiones generadas', fmt(d.generadas), `${d.ventas} venta${d.ventas === 1 ? '' : 's'} asociada${d.ventas === 1 ? '' : 's'}`, 'gold')}
+      ${kpiBox('Comisiones cobradas', fmt(d.cobradas), 'ya ingresaron a la caja de ELDOSTORE', 'green')}
+      ${kpiBox('Comisiones pendientes', fmt(d.pendientes), 'ELDOSTORE todavía tiene que cobrarlas', d.pendientes ? 'red' : '')}
+      ${kpiBox('Vendido por los asociados', fmt(d.ventas_vendedores), `para los vendedores: ${fmt(d.para_vendedores)} · no es ingreso de ELDOSTORE`, '')}
+    </div>
+    <p class="muted-sm">Generadas = cobradas + pendientes, por fecha de la venta (sin anuladas). Control de caja: en el período entraron ${fmt(d.caja_neto)} por comisiones (${d.caja_movimientos} movimiento${d.caja_movimientos === 1 ? '' : 's'}, por fecha de cobro).</p>`;
+}
+async function dibujarIndicadoresVentasMkt() {
+  const el = document.getElementById('mktIndicadores'); if (!el) return;
+  try { el.innerHTML = htmlIndicadoresMkt(await indicadoresMkt(mktFiltro.ventasDesde, mktFiltro.ventasHasta, mktFiltro.ventasVendedor)); }
+  catch (e) { el.innerHTML = `<div class="notice">${esc(e.message || 'No se pudieron calcular los indicadores.')}</div>`; }
 }
 function htmlVentasMkt() {
   const validas = ventasFiltradasMkt(false);
-  const suma = k => validas.reduce((a, s) => a + s[k], 0);
-  const pendiente = validas.filter(s => !s.comision_cobrada).reduce((a, s) => a + s.comision, 0);
-  const meses = Array.from(new Set(MKT.ventas.map(s => String(s.fecha).slice(0, 7)))).sort().reverse();
   const porVendedor = MKT.vendedores.map(v => {
     const vs = validas.filter(s => s.vendedor_id === v.id);
     return { v, n: vs.length, total: vs.reduce((a, s) => a + s.total, 0), com: vs.reduce((a, s) => a + s.comision, 0),
-             vend: vs.reduce((a, s) => a + s.monto_vendedor, 0), pend: vs.filter(s => !s.comision_cobrada).reduce((a, s) => a + s.comision, 0) };
+             vend: vs.reduce((a, s) => a + s.monto_vendedor, 0), cob: vs.filter(s => s.comision_cobrada).reduce((a, s) => a + s.comision, 0),
+             pend: vs.filter(s => !s.comision_cobrada).reduce((a, s) => a + s.comision, 0) };
   }).filter(x => x.n);
   const lista = ventasFiltradasMkt(mktFiltro.verAnuladas);
+  setTimeout(dibujarIndicadoresVentasMkt, 0);
   return `<div class="toolbar">
       <select onchange="mktFiltro.ventasVendedor=this.value;renderAsociados()" aria-label="Vendedor">${opcionesVendedoresMkt(mktFiltro.ventasVendedor, 'Todos los vendedores')}</select>
-      <select onchange="mktFiltro.ventasMes=this.value;renderAsociados()" aria-label="Mes"><option value="">Todos los meses</option>
-        ${meses.map(m => `<option value="${m}" ${mktFiltro.ventasMes === m ? 'selected' : ''}>${m.slice(5)}/${m.slice(0, 4)}</option>`).join('')}</select>
+      <div class="field" style="margin:0"><label>Desde</label><input type="date" value="${mktFiltro.ventasDesde}" onchange="mktFiltro.ventasDesde=this.value;renderAsociados()"></div>
+      <div class="field" style="margin:0"><label>Hasta</label><input type="date" value="${mktFiltro.ventasHasta}" onchange="mktFiltro.ventasHasta=this.value;renderAsociados()"></div>
       <label class="check-row" style="margin:0"><input type="checkbox" ${mktFiltro.verAnuladas ? 'checked' : ''} onchange="mktFiltro.verAnuladas=this.checked;renderAsociados()"> Mostrar anuladas</label>
       <div class="spacer"></div>
       <button class="btn btn-primary btn-sm" ${mktAdmin()} ${MKT.productos.length ? '' : 'disabled'} onclick="abrirVentaMkt()">+ Registrar venta asociada</button>
     </div>
-    <div class="grid grid-4" style="margin-bottom:16px">
-      ${kpiBox('Vendido por asociados', fmt(suma('total')), `${validas.length} venta${validas.length === 1 ? '' : 's'}`, 'gold')}
-      ${kpiBox('Comisión de ELDOSTORE', fmt(suma('comision')), 'lo que le corresponde a ELDOSTORE', 'green')}
-      ${kpiBox('Para los vendedores', fmt(suma('monto_vendedor')), 'total − comisión', '')}
-      ${kpiBox('Comisión por cobrar', fmt(pendiente), 'todavía no la pagaron', pendiente ? 'red' : '')}
-    </div>
+    <div id="mktIndicadores"><p class="muted-sm">Calculando indicadores…</p></div>
     ${porVendedor.length ? `<div class="panel"><h3>Por vendedor</h3><div class="table-wrap"><table>
-      <thead><tr><th>Vendedor</th><th>Ventas</th><th>Total vendido</th><th>Comisión ELDOSTORE</th><th>Para el vendedor</th><th>Comisión por cobrar</th></tr></thead>
-      <tbody>${porVendedor.map(x => `<tr><td>${esc(x.v.nombre)}</td><td>${x.n}</td><td>${fmt(x.total)}</td><td>${fmt(x.com)}</td><td>${fmt(x.vend)}</td><td>${x.pend ? `<b style="color:var(--red)">${fmt(x.pend)}</b>` : fmt(0)}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>Vendedor</th><th>Ventas</th><th>Total vendido</th><th>Comisión generada</th><th>Cobrada</th><th>Pendiente</th><th>Para el vendedor</th></tr></thead>
+      <tbody>${porVendedor.map(x => `<tr><td>${esc(x.v.nombre)}</td><td>${x.n}</td><td>${fmt(x.total)}</td><td>${fmt(x.com)}</td><td>${fmt(x.cob)}</td><td>${x.pend ? `<b style="color:var(--red)">${fmt(x.pend)}</b>` : fmt(0)}</td><td>${fmt(x.vend)}</td></tr>`).join('')}</tbody>
     </table></div></div>` : ''}
     <div class="table-wrap"><table>
       <thead><tr><th>Fecha</th><th>Vendedor</th><th>Producto</th><th>Cant.</th><th>Total</th><th>Comisión</th><th>Al vendedor</th><th>Comisión</th><th></th></tr></thead>
@@ -481,4 +498,43 @@ async function confirmarComisionMkt(id, cobrada) {
     closeModal(); renderAsociados();
     showToast(cobrada ? (r && r.monto ? `Comisión cobrada: ingresaron ${fmt(r.monto)} a la caja de ELDOSTORE.` : 'Comisión marcada como cobrada.') : 'Comisión otra vez por cobrar (contramovimiento en caja).');
   } catch (e) { showError(e); btn.disabled = false; }
+}
+
+/* ---------------- Reportes: ingresos de ELDOSTORE + Marketplace ----------------
+   Se llama al final de renderReportes() con lo que ESE reporte ya calculó para las
+   ventas propias (no se recalcula ni se cambia nada de ese cálculo). Las comisiones
+   salen de mkt_indicadores (solo administrador). Las ventas completas de los
+   asociados nunca se suman como ingreso de ELDOSTORE. */
+let repMktVendedor = '';
+async function renderIndicadoresMkt({ desde, hasta, cuenta, propias, gastos }) {
+  const el = document.getElementById('repMarketplace'); if (!el) return;
+  if (!MKT.disponible || !MKT.esAdmin) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  const eldo = cuentaEldostoreId();
+  if (cuenta && cuenta !== eldo) {
+    el.innerHTML = `<h3>Marketplace (tiendas asociadas)</h3><p class="muted-sm">Las comisiones del Marketplace son de la cuenta ELDOSTORE. Elegí «Todas» o ELDOSTORE para verlas junto a las ventas.</p>`;
+    return;
+  }
+  el.innerHTML = '<h3>Ingresos de ELDOSTORE: ventas propias + Marketplace</h3><p class="muted-sm">Calculando…</p>';
+  let d;
+  try { d = await indicadoresMkt(desde, hasta, repMktVendedor); }
+  catch (e) { el.innerHTML = `<h3>Marketplace</h3><div class="notice">${esc(e.message)}</div>`; return; }
+  const ventasPropias = propias.todas.total, gananciaPropia = propias.todas.ganancia;
+  const fila = (t, v, nota, fuerte) => `<tr${fuerte ? ' style="font-weight:700"' : ''}><td>${t}</td><td>${fmt(v)}</td><td style="color:var(--muted);font-size:.8rem">${nota}</td></tr>`;
+  el.innerHTML = `<h3>Ingresos de ELDOSTORE: ventas propias + Marketplace</h3>
+    <div class="toolbar" style="margin:6px 0 10px"><select onchange="repMktVendedor=this.value;renderReportes()" aria-label="Vendedor asociado">${opcionesVendedoresMkt(repMktVendedor, 'Todos los vendedores asociados')}</select></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Concepto</th><th>Importe</th><th></th></tr></thead>
+      <tbody>
+        ${fila('Ingresos por ventas propias', ventasPropias, `${propias.todas.cantidad} ventas de la tienda (propias y por revendedor)${cuenta ? ' · cuenta ELDOSTORE' : ''}`)}
+        ${fila('Ingresos por comisiones del Marketplace', d.generadas, `${d.ventas} ventas asociadas${repMktVendedor ? ' · ' + esc((vendedorMkt(repMktVendedor) || {}).nombre || '') : ''} · cobradas ${fmt(d.cobradas)} · pendientes ${fmt(d.pendientes)}`)}
+        ${fila('Ingresos totales de ELDOSTORE', ventasPropias + d.generadas, 'ventas propias + comisiones (las ventas de los asociados no se suman)', true)}
+      </tbody></table></div>
+    <div class="grid grid-4" style="margin-top:14px">
+      ${kpiBox('Ganancia por ventas propias', fmt(gananciaPropia), 'el mismo cálculo de siempre (ganancia bruta)', 'gold')}
+      ${kpiBox('Comisiones generadas', fmt(d.generadas), 'Marketplace', 'gold')}
+      ${kpiBox('Comisiones cobradas', fmt(d.cobradas), 'ingresadas a la caja', 'green')}
+      ${kpiBox('Comisiones pendientes', fmt(d.pendientes), 'por cobrar a los vendedores', d.pendientes ? 'red' : '')}
+    </div>
+    <p class="muted-sm" style="margin-top:8px">Fechas: ventas propias según el reporte de arriba; comisiones por la fecha de la venta asociada (hora de Argentina). Vendido por los asociados en el período: ${fmt(d.ventas_vendedores)} (no es ingreso de ELDOSTORE). Gastos del período: ${fmt(gastos)}.</p>`;
 }

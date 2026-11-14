@@ -195,6 +195,21 @@ const r = (n, cond, det) => { if (cond) { ok++; console.log("[OK]   ", n, det ? 
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(OUT, "10b-panel-caja.png"), fullPage: true });
   r("La caja del panel muestra el ingreso de la comisión", await page.$eval("#cajaTableBody", t => t.textContent.includes("comision_asociado") && t.textContent.includes("Comisión 10 % de Perfumes del Sol")));
+  // Indicadores: pestaña Ventas y comisiones y Reportes
+  await page.evaluate(() => { switchView("asociados"); });
+  await page.waitForFunction(() => /Comisiones cobradas/.test((document.getElementById("mktIndicadores") || {}).textContent || ""));
+  const ind = await page.$eval("#mktIndicadores", e => e.textContent.replace(/\s+/g, " "));
+  r("Pestaña Ventas: generadas $9.000, cobradas $9.000, pendientes $0; lo vendido por el asociado aparte",
+    /Comisiones generadas ?\$9\.000/.test(ind) && /Comisiones cobradas ?\$9\.000/.test(ind) && /Comisiones pendientes ?\$0/.test(ind) && /Vendido por los asociados ?\$90\.000/.test(ind), ind.slice(0, 200));
+  await page.screenshot({ path: path.join(OUT, "10c-panel-indicadores.png"), fullPage: true });
+  await page.evaluate(() => { switchView("reportes"); });
+  await page.waitForFunction(() => /Ingresos totales de ELDOSTORE/.test(document.getElementById("repMarketplace").textContent));
+  const rep = await page.$eval("#repMarketplace", e => e.textContent.replace(/\s+/g, " "));
+  r("Reportes: ventas propias, comisiones del Marketplace y total por separado (sin sumar los $90.000 del asociado)",
+    /Ingresos por ventas propias ?\$0/.test(rep) && /Ingresos por comisiones del Marketplace ?\$9\.000/.test(rep) && /Ingresos totales de ELDOSTORE ?\$9\.000/.test(rep), rep.slice(0, 260));
+  r("Reportes: la ganancia de ventas propias sigue siendo la del cálculo de siempre",
+    await page.evaluate(() => { const g = [...document.querySelectorAll("#repKpis .kpi")].find(k => /Ganancia bruta/.test(k.textContent)); return !!g && /Ganancia por ventas propias ?\$0/.test(document.getElementById("repMarketplace").textContent.replace(/\s+/g, " ")) && /\$0/.test(g.textContent); }));
+  await (await page.$("#repMarketplace")).screenshot({ path: path.join(OUT, "10d-panel-reportes.png") });
   await page.evaluate(() => switchView("asociados"));
   await page.click("text=Anular");
   await page.waitForSelector("#maBtn");

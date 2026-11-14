@@ -1294,6 +1294,8 @@ function renderReportes() {
   document.getElementById('repTopProductos').innerHTML = top.length
     ? top.map(([nombre, d]) => `<tr><td>${esc(nombre)}</td><td>${d.unidades}</td><td>${fmt(round2(d.total))}</td></tr>`).join('')
     : '<tr><td colspan="3" class="empty-state">No hay ventas en el rango seleccionado.</td></tr>';
+  // Vendedores asociados (migración 006): panel aparte con las comisiones; no cambia nada de lo de arriba.
+  if (typeof renderIndicadoresMkt === 'function') renderIndicadoresMkt({ desde, hasta, cuenta, propias: r, gastos: totalGastos });
 }
 
 /* =================================== CONFIGURACIÓN ======================================= */

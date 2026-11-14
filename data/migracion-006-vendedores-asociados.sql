@@ -476,7 +476,59 @@ begin
     'productos', coalesce((select jsonb_agg(to_jsonb(p) || jsonb_build_object('fotos',
                     coalesce((select jsonb_agg(f.url order by f.orden) from mkt_producto_fotos f where f.producto_id = p.id), '[]'))
                     order by p.creado desc) from mkt_productos p), '[]'),
-    'ventas', coalesce((select jsonb_agg(to_jsonb(s) order by s.fecha desc) from mkt_ventas s), '[]'));
+    -- Información financiera (ventas y comisiones): solo el administrador.
+    'ventas', case when eldo_es_admin()
+                then coalesce((select jsonb_agg(to_jsonb(s) order by s.fecha desc) from mkt_ventas s), '[]')
+                else '[]'::jsonb end);
+end $$;
+
+-- Indicadores del Marketplace (solo administrador). Fechas en hora de Argentina; vacías = sin límite.
+-- Se calculan SOLO con mkt_ventas (una fila por venta, sin anuladas): así una comisión nunca se cuenta
+-- dos veces, aunque su cobro también figure en la caja.
+--   generadas = comisiones de las ventas del período (devengadas)  = pendientes + cobradas
+--   pendientes / cobradas = según el estado actual de cada venta del período
+--   ventas_vendedores = total que vendieron los asociados (NO es ingreso de ELDOSTORE; solo informativo)
+--   caja_neto = lo que entró a la caja por comisiones en el período (fecha del movimiento; ingresos −
+--               contramovimientos). Es un control: puede diferir de «cobradas» si se cobra en otro mes.
+create function public.mkt_indicadores(p_desde date default null, p_hasta date default null, p_vendedor uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform mkt_requiere_admin();
+  if p_desde is not null and p_hasta is not null and p_hasta < p_desde then
+    raise exception 'La fecha «hasta» es anterior a «desde».';
+  end if;
+  return (
+    with v as (
+      select s.* from mkt_ventas s
+       where not s.anulada
+         and (p_vendedor is null or s.vendedor_id = p_vendedor)
+         and (p_desde is null or (s.fecha at time zone 'America/Argentina/Buenos_Aires')::date >= p_desde)
+         and (p_hasta is null or (s.fecha at time zone 'America/Argentina/Buenos_Aires')::date <= p_hasta)),
+    caja as (
+      select coalesce(sum(case when c.tipo = 'ingreso' then c.monto else -c.monto end), 0) neto, count(*) movimientos
+        from cash_movements c join mkt_ventas s on s.id = c.ref_id
+       where c.origen = 'comision_asociado'
+         and (p_vendedor is null or s.vendedor_id = p_vendedor)
+         and (p_desde is null or (c.fecha at time zone 'America/Argentina/Buenos_Aires')::date >= p_desde)
+         and (p_hasta is null or (c.fecha at time zone 'America/Argentina/Buenos_Aires')::date <= p_hasta))
+    select jsonb_build_object(
+      'desde', p_desde, 'hasta', p_hasta, 'vendedor', p_vendedor,
+      'ventas', (select count(*) from v),
+      'ventas_vendedores', (select coalesce(sum(total), 0) from v),
+      'generadas', (select coalesce(sum(comision), 0) from v),
+      'pendientes', (select coalesce(sum(comision), 0) from v where not comision_cobrada),
+      'cobradas', (select coalesce(sum(comision), 0) from v where comision_cobrada),
+      'para_vendedores', (select coalesce(sum(monto_vendedor), 0) from v),
+      'caja_neto', (select neto from caja),
+      'caja_movimientos', (select movimientos from caja),
+      'por_vendedor', coalesce((select jsonb_agg(x order by x->>'nombre') from (
+          select jsonb_build_object('id', vendedor_id, 'nombre', max(vendedor_nombre), 'ventas', count(*),
+                   'total', sum(total), 'generadas', sum(comision),
+                   'pendientes', coalesce(sum(comision) filter (where not comision_cobrada), 0),
+                   'cobradas', coalesce(sum(comision) filter (where comision_cobrada), 0),
+                   'para_vendedor', sum(monto_vendedor)) x
+            from v group by vendedor_id) t), '[]'))
+  );
 end $$;
 
 -- -----------------------------------------------------------------------------
@@ -489,14 +541,18 @@ begin
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     execute format('grant select on public.%I to authenticated', t);
-    execute format('create policy lectura_usuarios_habilitados on public.%I for select to authenticated using (public.eldo_es_usuario_activo())', t);
+    if t = 'mkt_ventas' then   -- ventas y comisiones: información financiera, solo el administrador
+      execute format('create policy lectura_administrador on public.%I for select to authenticated using (public.eldo_es_admin())', t);
+    else
+      execute format('create policy lectura_usuarios_habilitados on public.%I for select to authenticated using (public.eldo_es_usuario_activo())', t);
+    end if;
   end loop;
   revoke all on sequence public.mkt_productos_codigo_seq from anon, authenticated;
   for f in select p.oid::regprocedure as sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname in ('mkt_requiere_admin', 'mkt_slug', 'mkt_guardar_vendedor',
              'mkt_activar_vendedor', 'mkt_guardar_producto', 'mkt_estado_producto', 'mkt_eliminar_producto',
              'mkt_registrar_venta', 'mkt_anular_venta', 'mkt_comision_cobrada', 'tiendas_asociadas', 'mkt_panel',
-             'mkt_mov_comision_vigente', 'mkt_revertir_comision') loop
+             'mkt_mov_comision_vigente', 'mkt_revertir_comision', 'mkt_indicadores') loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
   end loop;
 end
@@ -512,7 +568,8 @@ grant execute on function
   public.mkt_eliminar_producto(uuid),
   public.mkt_registrar_venta(jsonb),
   public.mkt_anular_venta(uuid, text, uuid),
-  public.mkt_comision_cobrada(uuid, boolean, uuid)
+  public.mkt_comision_cobrada(uuid, boolean, uuid),
+  public.mkt_indicadores(date, date, uuid)
 to authenticated;
 
 commit;

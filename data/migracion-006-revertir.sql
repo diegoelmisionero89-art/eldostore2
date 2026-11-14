@@ -26,6 +26,7 @@ $revertir$;
 
 drop function if exists public.tiendas_asociadas();
 drop function if exists public.mkt_panel();
+drop function if exists public.mkt_indicadores(date, date, uuid);
 drop function if exists public.mkt_comision_cobrada(uuid, boolean, uuid);
 drop function if exists public.mkt_anular_venta(uuid, text, uuid);
 drop function if exists public.mkt_revertir_comision(uuid, uuid, text);
