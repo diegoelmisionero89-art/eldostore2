@@ -342,12 +342,12 @@ async function indicadoresMkt(desde, hasta, vendedor) {
 }
 function htmlIndicadoresMkt(d) {
   return `<div class="grid grid-4" style="margin-bottom:12px">
-      ${kpiBox('Comisiones generadas', fmt(d.generadas), `${d.ventas} venta${d.ventas === 1 ? '' : 's'} asociada${d.ventas === 1 ? '' : 's'}`, 'gold')}
-      ${kpiBox('Comisiones cobradas', fmt(d.cobradas), 'ya ingresaron a la caja de ELDOSTORE', 'green')}
+      ${kpiBox('Comisiones generadas', fmt(d.generadas), `${d.ventas} venta${d.ventas === 1 ? '' : 's'} asociada${d.ventas === 1 ? '' : 's'} · cobradas + pendientes`, 'gold')}
+      ${kpiBox('Comisiones cobradas', fmt(d.cobradas), 'de las ventas del período', '')}
       ${kpiBox('Comisiones pendientes', fmt(d.pendientes), 'ELDOSTORE todavía tiene que cobrarlas', d.pendientes ? 'red' : '')}
-      ${kpiBox('Vendido por los asociados', fmt(d.ventas_vendedores), `para los vendedores: ${fmt(d.para_vendedores)} · no es ingreso de ELDOSTORE`, '')}
+      ${kpiBox('Ingresos efectivos por comisiones', fmt(d.ingresos_efectivos), 'lo que entró a la caja de ELDOSTORE', 'green')}
     </div>
-    <p class="muted-sm">Generadas = cobradas + pendientes, por fecha de la venta (sin anuladas). Control de caja: en el período entraron ${fmt(d.caja_neto)} por comisiones (${d.caja_movimientos} movimiento${d.caja_movimientos === 1 ? '' : 's'}, por fecha de cobro).</p>`;
+    <p class="muted-sm">Generadas y cobradas: por fecha de la venta (sin anuladas). Ingresos efectivos: por fecha de cobro, solo lo que entró a la caja (${d.caja_movimientos} movimiento${d.caja_movimientos === 1 ? '' : 's'}); nunca incluye pendientes. Vendido por los asociados: ${fmt(d.ventas_vendedores)} (para los vendedores ${fmt(d.para_vendedores)}; no es ingreso de ELDOSTORE).</p>`;
 }
 async function dibujarIndicadoresVentasMkt() {
   const el = document.getElementById('mktIndicadores'); if (!el) return;
@@ -527,14 +527,14 @@ async function renderIndicadoresMkt({ desde, hasta, cuenta, propias, gastos }) {
       <thead><tr><th>Concepto</th><th>Importe</th><th></th></tr></thead>
       <tbody>
         ${fila('Ingresos por ventas propias', ventasPropias, `${propias.todas.cantidad} ventas de la tienda (propias y por revendedor)${cuenta ? ' · cuenta ELDOSTORE' : ''}`)}
-        ${fila('Ingresos por comisiones del Marketplace', d.generadas, `${d.ventas} ventas asociadas${repMktVendedor ? ' · ' + esc((vendedorMkt(repMktVendedor) || {}).nombre || '') : ''} · cobradas ${fmt(d.cobradas)} · pendientes ${fmt(d.pendientes)}`)}
-        ${fila('Ingresos totales de ELDOSTORE', ventasPropias + d.generadas, 'ventas propias + comisiones (las ventas de los asociados no se suman)', true)}
+        ${fila('Ingresos por comisiones del Marketplace', d.ingresos_efectivos, `solo cobradas: lo que entró a la caja${repMktVendedor ? ' · ' + esc((vendedorMkt(repMktVendedor) || {}).nombre || '') : ''} (las pendientes no se suman)`)}
+        ${fila('Ingresos totales de ELDOSTORE', ventasPropias + d.ingresos_efectivos, 'ventas propias + comisiones cobradas (las ventas de los asociados no se suman)', true)}
       </tbody></table></div>
     <div class="grid grid-4" style="margin-top:14px">
       ${kpiBox('Ganancia por ventas propias', fmt(gananciaPropia), 'el mismo cálculo de siempre (ganancia bruta)', 'gold')}
-      ${kpiBox('Comisiones generadas', fmt(d.generadas), 'Marketplace', 'gold')}
-      ${kpiBox('Comisiones cobradas', fmt(d.cobradas), 'ingresadas a la caja', 'green')}
+      ${kpiBox('Comisiones generadas', fmt(d.generadas), `${d.ventas} ventas asociadas · cobradas + pendientes`, 'gold')}
+      ${kpiBox('Comisiones cobradas', fmt(d.cobradas), 'de las ventas del período', '')}
       ${kpiBox('Comisiones pendientes', fmt(d.pendientes), 'por cobrar a los vendedores', d.pendientes ? 'red' : '')}
     </div>
-    <p class="muted-sm" style="margin-top:8px">Fechas: ventas propias según el reporte de arriba; comisiones por la fecha de la venta asociada (hora de Argentina). Vendido por los asociados en el período: ${fmt(d.ventas_vendedores)} (no es ingreso de ELDOSTORE). Gastos del período: ${fmt(gastos)}.</p>`;
+    <p class="muted-sm" style="margin-top:8px">Fechas: ventas propias según el reporte de arriba; comisiones generadas, cobradas y pendientes por la fecha de la venta asociada; ingresos efectivos por la fecha del cobro (hora de Argentina). Vendido por los asociados en el período: ${fmt(d.ventas_vendedores)} (no es ingreso de ELDOSTORE). Gastos del período: ${fmt(gastos)}.</p>`;
 }

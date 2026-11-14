@@ -195,31 +195,59 @@ const r = (n, cond, det) => { if (cond) { ok++; console.log("[OK]   ", n, det ? 
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(OUT, "10b-panel-caja.png"), fullPage: true });
   r("La caja del panel muestra el ingreso de la comisión", await page.$eval("#cajaTableBody", t => t.textContent.includes("comision_asociado") && t.textContent.includes("Comisión 10 % de Perfumes del Sol")));
-  // Indicadores: pestaña Ventas y comisiones y Reportes
-  await page.evaluate(() => { switchView("asociados"); });
-  await page.waitForFunction(() => /Comisiones cobradas/.test((document.getElementById("mktIndicadores") || {}).textContent || ""));
-  const ind = await page.$eval("#mktIndicadores", e => e.textContent.replace(/\s+/g, " "));
-  r("Pestaña Ventas: generadas $9.000, cobradas $9.000, pendientes $0; lo vendido por el asociado aparte",
-    /Comisiones generadas ?\$9\.000/.test(ind) && /Comisiones cobradas ?\$9\.000/.test(ind) && /Comisiones pendientes ?\$0/.test(ind) && /Vendido por los asociados ?\$90\.000/.test(ind), ind.slice(0, 200));
+  // ESCENARIO de indicadores: venta 1 cobrada ($9.000) + venta 2 pendiente ($6.750)
+  await page.evaluate(() => switchView("asociados"));
+  await page.click("text=+ Registrar venta asociada");
+  await page.selectOption("#ms_prod", prod.id);
+  await page.fill("#ms_cant", "1");
+  await page.fill("#ms_precio", "67500");
+  await page.fill("#ms_cliente", "Bruno");
+  await page.click("#msBtn");
+  await page.waitForFunction(() => MKT.ventas.length === 2 && !document.getElementById("modalBg").classList.contains("open"));
+  const leerInd = async () => { await page.waitForFunction(() => /Ingresos efectivos/.test((document.getElementById("mktIndicadores") || {}).textContent || "")); return page.$eval("#mktIndicadores", e => e.textContent.replace(/\s+/g, " ")); };
+  const leerRep = async () => { await page.evaluate(() => switchView("reportes")); await page.waitForFunction(() => /Ingresos totales de ELDOSTORE/.test(document.getElementById("repMarketplace").textContent)); return page.$eval("#repMarketplace", e => e.textContent.replace(/\s+/g, " ")); };
+  let ind = await leerInd();
+  r("Pestaña Ventas: generadas $15.750 · cobradas $9.000 · pendientes $6.750 · ingresos efectivos $9.000",
+    /Comisiones generadas ?\$15\.750/.test(ind) && /Comisiones cobradas ?\$9\.000/.test(ind) && /Comisiones pendientes ?\$6\.750/.test(ind) && /Ingresos efectivos por comisiones ?\$9\.000/.test(ind), ind.slice(0, 260));
   await page.screenshot({ path: path.join(OUT, "10c-panel-indicadores.png"), fullPage: true });
-  await page.evaluate(() => { switchView("reportes"); });
-  await page.waitForFunction(() => /Ingresos totales de ELDOSTORE/.test(document.getElementById("repMarketplace").textContent));
-  const rep = await page.$eval("#repMarketplace", e => e.textContent.replace(/\s+/g, " "));
-  r("Reportes: ventas propias, comisiones del Marketplace y total por separado (sin sumar los $90.000 del asociado)",
-    /Ingresos por ventas propias ?\$0/.test(rep) && /Ingresos por comisiones del Marketplace ?\$9\.000/.test(rep) && /Ingresos totales de ELDOSTORE ?\$9\.000/.test(rep), rep.slice(0, 260));
+  let rep = await leerRep();
+  r("Reportes: ingresos por comisiones = $9.000 (solo cobradas) y total = propias + $9.000, sin los $6.750 pendientes",
+    /Ingresos por comisiones del Marketplace ?\$9\.000/.test(rep) && /Ingresos totales de ELDOSTORE ?\$9\.000/.test(rep)
+      && /Comisiones generadas ?\$15\.750/.test(rep) && /Comisiones pendientes ?\$6\.750/.test(rep), rep.slice(0, 300));
   r("Reportes: la ganancia de ventas propias sigue siendo la del cálculo de siempre",
     await page.evaluate(() => { const g = [...document.querySelectorAll("#repKpis .kpi")].find(k => /Ganancia bruta/.test(k.textContent)); return !!g && /Ganancia por ventas propias ?\$0/.test(document.getElementById("repMarketplace").textContent.replace(/\s+/g, " ")) && /\$0/.test(g.textContent); }));
   await (await page.$("#repMarketplace")).screenshot({ path: path.join(OUT, "10d-panel-reportes.png") });
+
+  // Cobrar después los $6.750
   await page.evaluate(() => switchView("asociados"));
-  await page.click("text=Anular");
+  await page.click('tr:has-text("Bruno") >> text=Marcar cobrada');
+  await page.waitForSelector("#mcBtn");
+  await page.click("#mcBtn");
+  await page.waitForFunction(() => MKT.ventas.every(v => v.comision_cobrada) && !document.getElementById("modalBg").classList.contains("open"));
+  ind = await leerInd();
+  r("Al cobrar los $6.750: ingresos efectivos $15.750, cobradas $15.750, pendientes $0",
+    /Comisiones generadas ?\$15\.750/.test(ind) && /Comisiones cobradas ?\$15\.750/.test(ind) && /Comisiones pendientes ?\$0/.test(ind) && /Ingresos efectivos por comisiones ?\$15\.750/.test(ind), ind.slice(0, 260));
+  const vig = await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado" && m.tipo === "ingreso" && !DB.cashMovements.some(x => x.anulaA === m.id)).map(m => m.monto).sort((a, b) => a - b));
+  r("Los $9.000 anteriores no se duplicaron: en caja hay un ingreso de $6.750 y uno de $9.000", JSON.stringify(vig) === "[6750,9000]", JSON.stringify(vig));
+  await page.screenshot({ path: path.join(OUT, "10e-panel-indicadores-cobrado.png"), fullPage: true });
+  rep = await leerRep();
+  r("Reportes después del cobro: ingresos por comisiones $15.750 y total $15.750",
+    /Ingresos por comisiones del Marketplace ?\$15\.750/.test(rep) && /Ingresos totales de ELDOSTORE ?\$15\.750/.test(rep), rep.slice(0, 260));
+  await (await page.$("#repMarketplace")).screenshot({ path: path.join(OUT, "10f-panel-reportes-cobrado.png") });
+
+  // Anular la venta de $90.000 (comisión ya cobrada)
+  await page.evaluate(() => switchView("asociados"));
+  await page.click('tr:has-text("Ana") >> text=Anular');
   await page.waitForSelector("#maBtn");
   await page.fill("#ma_motivo", "El cliente devolvió el perfume");
   await page.click("#maBtn");
-  await page.waitForFunction(() => MKT.ventas[0].anulada === true && !document.getElementById("modalBg").classList.contains("open"));
-  r("Anular: conserva la venta y devuelve el stock (2 → 4)", await page.evaluate(() => MKT.ventas[0].anulada && MKT.productos.find(p => p.codigo === "TA0001").stock === 4));
+  await page.waitForFunction(() => MKT.ventas.some(v => v.anulada) && !document.getElementById("modalBg").classList.contains("open"));
+  r("Anular: conserva la venta y devuelve el stock (1 → 3)", await page.evaluate(() => MKT.ventas.find(v => v.total === 90000).anulada && MKT.productos.find(p => p.codigo === "TA0001").stock === 3));
   const saldoCom = await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado").reduce((a, m) => a + (m.tipo === "ingreso" ? m.monto : -m.monto), 0));
-  r("Anular una venta con comisión cobrada: contramovimiento en caja (saldo de comisiones 0, nada borrado)",
-    saldoCom === 0 && (await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado").length)) === 2);
+  r("Anular con comisión cobrada: contramovimiento; quedan en caja solo los $6.750 (nada borrado)",
+    saldoCom === 6750 && (await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado").length)) === 3);
+  ind = await leerInd();
+  r("Indicadores después de anular: generadas, cobradas e ingresos efectivos $6.750", /Comisiones generadas ?\$6\.750/.test(ind) && /Ingresos efectivos por comisiones ?\$6\.750/.test(ind), ind.slice(0, 200));
 
   // Desactivar vendedor → desaparece de la tienda
   await page.click(".tab >> text=Vendedores");

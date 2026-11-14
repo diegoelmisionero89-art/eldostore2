@@ -488,8 +488,11 @@ end $$;
 --   generadas = comisiones de las ventas del período (devengadas)  = pendientes + cobradas
 --   pendientes / cobradas = según el estado actual de cada venta del período
 --   ventas_vendedores = total que vendieron los asociados (NO es ingreso de ELDOSTORE; solo informativo)
---   caja_neto = lo que entró a la caja por comisiones en el período (fecha del movimiento; ingresos −
---               contramovimientos). Es un control: puede diferir de «cobradas» si se cobra en otro mes.
+--   ingresos_efectivos = lo que REALMENTE entró a la caja de ELDOSTORE por comisiones en el período
+--               (cash_movements 'comision_asociado', por fecha del cobro: ingresos − contramovimientos).
+--               Nunca incluye pendientes y no duplica: cada cobro es un solo ingreso vigente.
+--               Es el valor que se usa como «Ingresos por comisiones» y en «Ingresos totales».
+--   (caja_neto: mismo valor, se conserva por compatibilidad)
 create function public.mkt_indicadores(p_desde date default null, p_hasta date default null, p_vendedor uuid default null)
 returns jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
@@ -519,6 +522,7 @@ begin
       'pendientes', (select coalesce(sum(comision), 0) from v where not comision_cobrada),
       'cobradas', (select coalesce(sum(comision), 0) from v where comision_cobrada),
       'para_vendedores', (select coalesce(sum(monto_vendedor), 0) from v),
+      'ingresos_efectivos', (select neto from caja),
       'caja_neto', (select neto from caja),
       'caja_movimientos', (select movimientos from caja),
       'por_vendedor', coalesce((select jsonb_agg(x order by x->>'nombre') from (

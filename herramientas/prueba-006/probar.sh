@@ -99,12 +99,23 @@ ind() { echo "$IND" | python3 -c "import json,sys;d=json.load(sys.stdin);print(i
 r "Generadas = cobradas + pendientes (9.000 + 6.750 = 15.750), sin la venta anulada" "^15750\|9000\|6750\|2$" "$(ind generadas)|$(ind cobradas)|$(ind pendientes)|$(ind ventas)"
 r "La comisión cobrada no se cuenta dos veces aunque esté en la caja" "^15750$" "$(ind generadas)"
 r "Ventas de los asociados aparte (no son ingreso de ELDOSTORE): 135.000; para vendedores 119.250" "^135000\|119250$" "$(ind ventas_vendedores)|$(ind para_vendedores)"
-r "Control de caja del período = comisiones cobradas vigentes (9.000)" "^9000$" "$(ind caja_neto)"
+r "ESCENARIO: generadas 15.750 · cobradas 9.000 · pendientes 6.750 · ingresos efectivos 9.000" "^15750\|9000\|6750\|9000$" \
+  "$(ind generadas)|$(ind cobradas)|$(ind pendientes)|$(ind ingresos_efectivos)"
+r "Ingresos efectivos = lo que entró a la caja por comisiones (nunca las pendientes)" "^9000$" \
+  "$(q postgres "" "select sum(case when tipo='ingreso' then monto else -monto end)::int from cash_movements where origen='comision_asociado'")"
+s3id=$(echo "$s3" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+q authenticated $ADM "select mkt_comision_cobrada('$s3id', true)" >/dev/null
+IND=$(q authenticated $ADM "select mkt_indicadores()")
+r "ESCENARIO: al cobrar después los 6.750 → ingresos efectivos 15.750, cobradas 15.750, pendientes 0, generadas 15.750" "^15750\|15750\|0\|15750$" \
+  "$(ind generadas)|$(ind cobradas)|$(ind pendientes)|$(ind ingresos_efectivos)"
+r "Los 9.000 anteriores no se duplicaron: un solo ingreso vigente por venta (9.000 y 6.750)" "^6750,9000$" \
+  "$(q postgres "" "select string_agg(monto::int::text, ',' order by monto) from cash_movements c where origen='comision_asociado' and tipo='ingreso' and not exists (select 1 from cash_movements x where x.anula_a = c.id)")"
+r "Volver a cobrar la de 9.000 se rechaza (no se duplica)" "ERROR:.*ya está registrada" "$(q authenticated $ADM "select mkt_comision_cobrada('$s1id', true)")"
 r "Filtro por vendedor (el otro vendedor no tiene ventas)" '"generadas": 0' "$(q authenticated $ADM "select mkt_indicadores(null, null, '$v2')")"
 r "Filtro por fecha (hasta ayer: nada)" '"generadas": 0' "$(q authenticated $ADM "select mkt_indicadores(null, (now() at time zone 'America/Argentina/Buenos_Aires')::date - 1, null)")"
 r "Filtro por fecha (hoy: todo)" '"generadas": 15750' "$(q authenticated $ADM "select mkt_indicadores((now() at time zone 'America/Argentina/Buenos_Aires')::date, (now() at time zone 'America/Argentina/Buenos_Aires')::date, null)")"
 r "Fechas invertidas se rechazan" "ERROR:.*anterior" "$(q authenticated $ADM "select mkt_indicadores('2026-12-01', '2026-11-01', null)")"
-r "Por vendedor: generadas, cobradas y pendientes" '"cobradas": 9000.*"generadas": 15750.*"pendientes": 6750' "$(echo "$IND" | python3 -c 'import json,sys;print(json.dumps(json.load(sys.stdin)["por_vendedor"][0], sort_keys=True))')"
+r "Por vendedor (ya cobrado todo): generadas, cobradas y pendientes" '"cobradas": 15750.*"generadas": 15750.*"pendientes": 0' "$(echo "$IND" | python3 -c 'import json,sys;print(json.dumps(json.load(sys.stdin)["por_vendedor"][0], sort_keys=True))')"
 r "Usuario no administrador NO ve los indicadores" "ERROR:.*Solo el administrador" "$(q authenticated $NIKO "select mkt_indicadores()")"
 r "Usuario no administrador NO ve ventas ni comisiones en el panel" '"ventas": \[\]' "$(q authenticated $NIKO "select mkt_panel()")"
 r "Usuario no administrador NO lee la tabla de ventas asociadas" "^0$" "$(q authenticated $NIKO "select count(*) from mkt_ventas")"
@@ -112,7 +123,9 @@ r "El administrador sí la lee" "^3$" "$(q authenticated $ADM "select count(*) f
 r "Visitante no puede pedir indicadores" "ERROR:.*permission denied" "$(q anon "" "select mkt_indicadores()")"
 q authenticated $ADM "select mkt_anular_venta('$s1id','Devolución del cliente')" >/dev/null
 r "Anular una venta con comisión cobrada la saca de la caja (contramovimiento) y la deja anulada" "^0\|true\|false$" \
-  "$(q postgres "" "select (select sum(case when tipo='ingreso' then monto else -monto end)::int from cash_movements where origen='comision_asociado')||'|'||anulada||'|'||comision_cobrada from mkt_ventas where id='$s1id'")"
+  "$(q postgres "" "select (select sum(case when tipo='ingreso' then monto else -monto end)::int from cash_movements where origen='comision_asociado' and ref_id='$s1id')||'|'||anulada||'|'||comision_cobrada from mkt_ventas where id='$s1id'")"
+IND=$(q authenticated $ADM "select mkt_indicadores()")
+r "Después de anular la de 9.000: ingresos efectivos 6.750 (solo lo que sigue en caja)" "^6750\|6750\|0$" "$(ind ingresos_efectivos)|$(ind generadas)|$(ind pendientes)"
 r "Comisión de venta anulada no se puede cobrar" "ERROR:.*anulada" "$(q authenticated $ADM "select mkt_comision_cobrada('$s1id', true)")"
 r "Los movimientos de caja ANTERIORES no cambiaron" "^$CAJA0$" "$(q postgres "" "select count(*)||'|'||md5(string_agg(id::text||tipo||origen||monto||coalesce(ref_id::text,''), ',' order by id)) from cash_movements where origen <> 'comision_asociado'")"
 r "En la caja nunca entra el total de una venta asociada" "^0$" "$(q postgres "" "select count(*) from cash_movements c join mkt_ventas v on v.id=c.ref_id where c.monto = v.total and v.total <> v.comision")"
