@@ -37,7 +37,34 @@ language sql security definer set search_path = '' as $$
   select p.id, p.codigo, p.nombre, p.categoria, p.precio, p.foto, (p.stock > 0) from public.products p where p.activo order by p.nombre $$;
 grant execute on function public.catalogo_tienda() to anon, authenticated;
 
+-- Caja con la estructura real de producción (migración 003): cuentas, custodios y movimientos
+create table public.accounts (id uuid primary key default gen_random_uuid(), codigo text unique, nombre text, tipo text default 'negocio', activo boolean default true, creado timestamptz default now());
+create table public.cash_holders (id uuid primary key default gen_random_uuid(), codigo text unique, nombre text, activo boolean default true, creado timestamptz default now());
+insert into public.accounts (codigo, nombre) values ('eldostore', 'ELDOSTORE'), ('niko', 'Niko'), ('ayelen', 'Ayelen');
+insert into public.cash_holders (codigo, nombre) values ('diego', 'Diego'), ('niko', 'Niko'), ('ayelen', 'Ayelen');
+create function public.eldo_cuenta(p_codigo text) returns uuid language sql stable security definer set search_path = public, pg_temp as $$
+  select id from accounts where codigo = p_codigo $$;
+create function public.eldo_valida_custodio(p_holder uuid) returns uuid language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if p_holder is null or not exists (select 1 from cash_holders where id = p_holder and activo) then
+    raise exception 'Indicá quién tiene el dinero (custodio válido).';
+  end if;
+  return p_holder;
+end $$;
+create table public.cash_movements (
+  id uuid primary key default gen_random_uuid(), fecha timestamptz default now(),
+  tipo text not null check (tipo in ('ingreso', 'egreso')), origen text not null, monto numeric not null,
+  descripcion text default '', ref_id uuid,
+  account_id uuid not null references public.accounts (id) default public.eldo_cuenta('eldostore'),
+  holder_id uuid not null references public.cash_holders (id), creado_por uuid default auth.uid(),
+  anula_a uuid references public.cash_movements (id));
+-- Movimientos anteriores (ventas propias): no se tienen que modificar
+insert into public.cash_movements (tipo, origen, monto, descripcion, ref_id, holder_id)
+select 'ingreso', 'venta', 30000, 'Venta', gen_random_uuid(), id from public.cash_holders where codigo = 'diego';
+insert into public.cash_movements (tipo, origen, monto, descripcion, ref_id, holder_id)
+select 'egreso', 'comision_revendedor', 3000, 'Comisión de revendedor', gen_random_uuid(), id from public.cash_holders where codigo = 'diego';
+
 -- Diego (administrador) y Niko (usuario activo, no administrador)
 insert into public.app_users values
-  ('11111111-1111-1111-1111-111111111111', gen_random_uuid(), 'Diego', true, true),
-  ('22222222-2222-2222-2222-222222222222', gen_random_uuid(), 'Niko', true, false);
+  ('11111111-1111-1111-1111-111111111111', (select id from public.cash_holders where codigo = 'diego'), 'Diego', true, true),
+  ('22222222-2222-2222-2222-222222222222', (select id from public.cash_holders where codigo = 'niko'), 'Niko', true, false);

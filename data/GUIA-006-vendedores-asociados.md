@@ -10,10 +10,11 @@ Rama: `vendedores-asociados-v1`. **No está publicada ni instalada en producció
 | Reversión | `data/migracion-006-revertir.sql` | Quita solo lo de la 006. Se niega si hay datos cargados. |
 | Panel | `js/asociados.js`, `admin.html`, `admin.css`, cambios mínimos en `js/ui.js`, `js/db.js`, `js/imagenes.js` | Menú «🏪 Tiendas asociadas»: vendedores, productos (con aprobación), ventas y comisiones. |
 | Tienda | `js/asociadas.js`, `index.html`, `css/tienda.css` | Sección «Tiendas asociadas», tienda de cada vendedor, ficha y pedido por WhatsApp al vendedor. |
-| Pruebas | `herramientas/prueba-006/` | Prueba de la base (38 controles) y de punta a punta en navegador (23 controles), en una base descartable. |
+| Pruebas | `herramientas/prueba-006/` | Prueba de la base (51 controles) y de punta a punta en navegador (28 controles), en una base descartable con la caja real (cuentas, custodios y anulaciones). |
 
-Lo que **no** toca: `products`, precios, stock, ventas, compras, gastos, caja, cuentas, usuarios,
-promociones, `catalogo_tienda()` ni `promociones_tienda()`. Los productos de vendedores nunca entran
+Lo que **no** toca: `products`, precios, stock, ventas, compras, gastos, cuentas, usuarios,
+promociones, `catalogo_tienda()` ni `promociones_tienda()`. De la caja no cambia estructura ni
+movimientos existentes: solo **agrega** el ingreso de cada comisión cobrada (ver abajo). Los productos de vendedores nunca entran
 en «Todos los productos», en el buscador ni en el carrito de ELDOSTORE.
 
 Sin la migración instalada, el panel y la tienda se ven exactamente como hoy (el menú y la sección
@@ -29,9 +30,37 @@ aparecen solos cuando la base tiene la 006).
 - **Comisión:** 10 % inicial, configurable por vendedor (0 a 50 %). Se copia en cada venta al
   registrarla: cambiarla no altera las ventas anteriores. Comisión = total × % ÷ 100, al peso;
   al vendedor = total − comisión. La calcula la base, no el navegador.
-- **Ventas asociadas:** se registran desde el panel (descuentan el stock del producto asociado), se
-  marcan «comisión cobrada» cuando el vendedor paga, y se **anulan con motivo** (devuelven el stock).
-  Nunca se borran. No se suman a la caja ni a las cuentas de ELDOSTORE.
+- **Ventas asociadas:** se registran desde el panel (descuentan el stock del producto asociado) y se
+  **anulan con motivo** (devuelven el stock). Nunca se borran. El total de la venta no entra a la caja
+  ni a las ventas propias de ELDOSTORE.
+
+## Comisión cobrada → caja de ELDOSTORE
+
+Al tocar **Marcar cobrada** (el panel pregunta quién recibió el dinero), la base agrega en
+`cash_movements`, con la misma estructura que el resto de la caja:
+
+| Campo | Valor |
+|---|---|
+| `tipo` | `ingreso` |
+| `origen` | `comision_asociado` |
+| `monto` | la comisión de ELDOSTORE (nunca el total de la venta) |
+| `descripcion` | «Comisión 10 % de *vendedor* · 2 × *producto* (*código*) · venta asociada de dd/mm/aaaa» |
+| `ref_id` | id de la venta asociada (`mkt_ventas.id`) |
+| `account_id` | cuenta ELDOSTORE |
+| `holder_id` | quién recibió el dinero (por defecto, quien lo marca) |
+| `fecha` / `creado_por` | momento del cobro y usuario |
+
+La venta asociada guarda `comision_cobrada_en` y `comision_mov_id` (el movimiento de caja).
+
+- **Pendiente:** no entra nada a la caja.
+- **Sin duplicados:** la venta se bloquea al marcarla y la base rechaza un segundo cobro si ya hay un
+  ingreso vigente de esa venta (doble clic, dos dispositivos o volver a abrirla).
+- **Volver a «por cobrar»** o **anular** una venta con la comisión cobrada: no se borra el ingreso; se
+  agrega el contramovimiento (`egreso`, mismo origen, `anula_a` = el ingreso), igual que las anulaciones
+  de ventas propias. Si después se cobra de nuevo, entra un ingreso nuevo.
+- El saldo de la caja y el «saldo de caja» de la cuenta ELDOSTORE (pantalla Cuentas) lo incluyen; la
+  «ganancia» de Cuentas (basada en ventas propias) no cambia.
+- La reversión de la 006 no borra estos movimientos: son dinero real que entró.
 - **Permisos:** solo el administrador (`app_users.es_admin`) crea, edita, aprueba y registra. Los demás
   usuarios activos del panel solo ven. La tienda pública solo lee `tiendas_asociadas()`, que no envía
   stock exacto, notas internas, comisiones ni ventas.
@@ -49,6 +78,7 @@ aparecen solos cuando la base tiene la 006).
    select count(*) from public.catalogo_tienda();        -- igual que antes de instalar
    select public.tiendas_asociadas();                     -- {"productos": [], "vendedores": []}
    select count(*) from pg_policies where tablename like 'mkt\_%';   -- 4
+   select count(*) from public.cash_movements where origen = 'comision_asociado';   -- 0
    ```
 4. **Publicar el código:** integrar la rama `vendedores-asociados-v1` en `main` (GitHub Pages publica solo).
    El orden importa poco: sin la migración, el código nuevo no muestra nada.
@@ -71,5 +101,4 @@ node herramientas/prueba-006/e2e.js http://127.0.0.1:8099 capturas
 ## Pendiente para etapas siguientes
 
 - Panel propio para que cada vendedor cargue sus productos (V2).
-- Registrar automáticamente en la caja el cobro de comisiones (hoy se marcan como cobradas).
 - Ficha para compartir con vista previa (`/p/<código>/`) para productos asociados.

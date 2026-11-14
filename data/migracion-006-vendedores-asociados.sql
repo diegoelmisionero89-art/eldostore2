@@ -13,8 +13,9 @@
 --   * Funciones para administrar todo desde el panel (solo el administrador) y una
 --     función pública de lectura para la tienda: tiendas_asociadas().
 --
--- Qué NO toca: products, precios, stock, ventas, compras, gastos, caja, cuentas,
--- usuarios, promociones, catalogo_tienda() ni promociones_tienda(). Los productos de
+-- Qué NO toca: products, precios, stock, ventas, compras, gastos, cuentas, usuarios,
+-- promociones, catalogo_tienda() ni promociones_tienda(). De la caja (cash_movements) no cambia
+-- estructura ni movimientos existentes: solo AGREGA los ingresos de comisiones cobradas. Los productos de
 -- vendedores NUNCA aparecen en catalogo_tienda() («Todos los productos»): viven en
 -- otra tabla y se publican solo por tiendas_asociadas().
 --
@@ -25,8 +26,10 @@
 --     al registrarla. Si después cambia el %, las ventas anteriores no cambian.
 --       comisión = total × % / 100 (al peso) · al vendedor = total − comisión.
 --   * Las ventas no se borran: se anulan con motivo (devuelven el stock).
---   * El pago y la entrega los coordina el vendedor. Esta migración no mueve la caja
---     de ELDOSTORE; la comisión se marca como «cobrada» cuando el vendedor la paga.
+--   * El pago y la entrega los coordina el vendedor. El total de la venta NO entra a la caja de
+--     ELDOSTORE: solo la COMISIÓN, y recién cuando se marca «cobrada» (ingreso en cash_movements,
+--     origen 'comision_asociado', cuenta ELDOSTORE, con la referencia de la venta). Volver a «por
+--     cobrar» o anular la venta agrega el contramovimiento; nunca se borra ni se duplica un ingreso.
 --
 -- Seguridad: una sola transacción; verificaciones previas; RLS en las tablas nuevas;
 -- escritura solo por funciones que exigen al administrador (app_users.es_admin);
@@ -51,6 +54,15 @@ begin
      or to_regprocedure('public.eldo_es_usuario_activo()') is null
      or to_regclass('public.audit_log') is null or to_regprocedure('public.eldo_auditar(text, text, uuid, jsonb)') is null then
     raise exception 'Falta la migración 003 (administrador, usuarios y auditoría). No se hizo ningún cambio.';
+  end if;
+  if to_regclass('public.cash_movements') is null or to_regprocedure('public.eldo_cuenta(text)') is null
+     or to_regprocedure('public.eldo_valida_custodio(uuid)') is null
+     or (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'cash_movements'
+          and column_name in ('tipo', 'origen', 'monto', 'descripcion', 'ref_id', 'account_id', 'holder_id', 'anula_a')) <> 8 then
+    raise exception 'La caja no tiene la estructura de la migración 003 (cash_movements con cuenta, custodio y anulaciones). No se hizo ningún cambio.';
+  end if;
+  if public.eldo_cuenta('eldostore') is null then
+    raise exception 'No existe la cuenta ELDOSTORE. No se hizo ningún cambio.';
   end if;
   if to_regprocedure('public.tiendas_asociadas()') is not null then
     raise exception 'Ya existe tiendas_asociadas(). No se hizo ningún cambio.';
@@ -126,6 +138,7 @@ create table public.mkt_ventas (
   notas text not null default '' check (length(notas) <= 500),
   comision_cobrada boolean not null default false,
   comision_cobrada_en timestamptz,
+  comision_mov_id uuid references public.cash_movements (id),   -- ingreso en la caja de ELDOSTORE
   anulada boolean not null default false,
   anulada_en timestamptz,
   motivo_anulacion text not null default '',
@@ -338,32 +351,96 @@ begin
   return jsonb_build_object('id', v_id, 'total', v_total, 'comision', v_com, 'monto_vendedor', v_total - v_com);
 end $$;
 
-create function public.mkt_anular_venta(p_id uuid, p_motivo text)
-returns jsonb language plpgsql volatile security definer set search_path = public, pg_temp as $$
-declare r mkt_ventas%rowtype;
+-- Caja: la comisión COBRADA entra como ingreso en la caja de ELDOSTORE, con la misma
+-- estructura que el resto de la caja (cash_movements):
+--   tipo 'ingreso' · origen 'comision_asociado' · monto = la comisión (nunca el total de la venta)
+--   ref_id = id de la venta asociada · cuenta ELDOSTORE · holder = quien recibió el dinero.
+-- Deshacer (volver a «por cobrar» o anular la venta) NO borra nada: agrega el contramovimiento
+-- (egreso con anula_a), igual que las anulaciones de ventas propias.
+-- Nunca hay dos ingresos vigentes por la misma venta (se bloquea la fila y se controla).
+create function public.mkt_mov_comision_vigente(p_venta uuid) returns uuid
+language sql stable security definer set search_path = public, pg_temp as $$
+  select c.id from cash_movements c
+   where c.ref_id = p_venta and c.origen = 'comision_asociado' and c.anula_a is null
+     and not exists (select 1 from cash_movements x where x.anula_a = c.id)
+   order by c.fecha desc limit 1
+$$;
+
+create function public.mkt_revertir_comision(p_venta uuid, p_holder uuid, p_motivo text) returns integer
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare m record; n integer := 0;
 begin
+  for m in select * from cash_movements c
+            where c.ref_id = p_venta and c.origen = 'comision_asociado' and c.anula_a is null
+              and not exists (select 1 from cash_movements x where x.anula_a = c.id)
+            for update loop
+    insert into cash_movements (tipo, origen, monto, descripcion, ref_id, account_id, holder_id, anula_a)
+    values ('egreso', 'comision_asociado', m.monto, left(p_motivo || ' · ' || coalesce(m.descripcion, ''), 300),
+            p_venta, m.account_id, coalesce(p_holder, m.holder_id), m.id);
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+create function public.mkt_anular_venta(p_id uuid, p_motivo text, p_holder_id uuid default null)
+returns jsonb language plpgsql volatile security definer set search_path = public, pg_temp as $$
+declare r mkt_ventas%rowtype; v_holder uuid; n integer := 0;
+begin
+  v_holder := eldo_requiere_usuario();
   perform mkt_requiere_admin();
   if length(btrim(coalesce(p_motivo, ''))) < 3 then raise exception 'Indicá el motivo de la anulación.'; end if;
   select * into r from mkt_ventas where id = p_id for update;
   if not found then raise exception 'La venta no existe.'; end if;
   if r.anulada then raise exception 'La venta ya estaba anulada.'; end if;
-  update mkt_ventas set anulada = true, anulada_en = now(), motivo_anulacion = btrim(p_motivo) where id = p_id;
+  -- Si la comisión ya estaba cobrada, sale de la caja (la devuelve quien indique el panel).
+  if r.comision_cobrada then
+    n := mkt_revertir_comision(p_id, eldo_valida_custodio(coalesce(p_holder_id, v_holder)),
+                               'Anulación de venta asociada: ' || btrim(p_motivo));
+  end if;
+  update mkt_ventas set anulada = true, anulada_en = now(), motivo_anulacion = btrim(p_motivo),
+         comision_cobrada = false, comision_cobrada_en = null, comision_mov_id = null where id = p_id;
   if r.producto_id is not null then
     update mkt_productos set stock = stock + r.cantidad, actualizado = now() where id = r.producto_id;
   end if;
-  perform eldo_auditar('anular', 'mkt_ventas', p_id, jsonb_build_object('motivo', btrim(p_motivo)));
-  return jsonb_build_object('ok', true);
+  perform eldo_auditar('anular', 'mkt_ventas', p_id, jsonb_build_object('motivo', btrim(p_motivo), 'comision_devuelta', n > 0));
+  return jsonb_build_object('ok', true, 'comisionDevuelta', n > 0);
 end $$;
 
-create function public.mkt_comision_cobrada(p_id uuid, p_cobrada boolean)
+-- p_cobrada = true: registra el ingreso de la comisión en la caja de ELDOSTORE.
+-- p_cobrada = false: la vuelve «por cobrar» con un contramovimiento (no borra el ingreso).
+-- p_holder_id: quién recibió (o devuelve) el dinero; por defecto, el usuario que lo marca.
+create function public.mkt_comision_cobrada(p_id uuid, p_cobrada boolean, p_holder_id uuid default null)
 returns jsonb language plpgsql volatile security definer set search_path = public, pg_temp as $$
+declare r mkt_ventas%rowtype; v_holder uuid; v_mov uuid; v_cuenta uuid := eldo_cuenta('eldostore');
 begin
+  v_holder := eldo_requiere_usuario();
   perform mkt_requiere_admin();
-  update mkt_ventas set comision_cobrada = p_cobrada, comision_cobrada_en = case when p_cobrada then now() end
-   where id = p_id and not anulada;
-  if not found then raise exception 'La venta no existe o está anulada.'; end if;
-  perform eldo_auditar(case when p_cobrada then 'comision_cobrada' else 'comision_pendiente' end, 'mkt_ventas', p_id, '{}');
-  return jsonb_build_object('ok', true);
+  v_holder := eldo_valida_custodio(coalesce(p_holder_id, v_holder));
+  select * into r from mkt_ventas where id = p_id for update;   -- dos clics a la vez: el segundo espera y ve el estado nuevo
+  if not found or r.anulada then raise exception 'La venta no existe o está anulada.'; end if;
+  if v_cuenta is null then raise exception 'No existe la cuenta ELDOSTORE en la caja.'; end if;
+  if p_cobrada then
+    if r.comision_cobrada or mkt_mov_comision_vigente(p_id) is not null then
+      raise exception 'Esta comisión ya está registrada como cobrada en la caja.';
+    end if;
+    if r.comision > 0 then
+      insert into cash_movements (tipo, origen, monto, descripcion, ref_id, account_id, holder_id)
+      values ('ingreso', 'comision_asociado', r.comision,
+              left(format('Comisión %s %% de %s · %s × %s (%s) · venta asociada de %s',
+                   trim(to_char(r.comision_pct, 'FM990.##')), r.vendedor_nombre, r.cantidad, r.producto_nombre,
+                   r.producto_codigo, to_char(r.fecha at time zone 'America/Argentina/Buenos_Aires', 'DD/MM/YYYY')), 300),
+              p_id, v_cuenta, v_holder)
+      returning id into v_mov;
+    end if;
+    update mkt_ventas set comision_cobrada = true, comision_cobrada_en = now(), comision_mov_id = v_mov where id = p_id;
+  else
+    if not r.comision_cobrada then raise exception 'Esta comisión ya figura por cobrar.'; end if;
+    perform mkt_revertir_comision(p_id, v_holder, 'Comisión marcada otra vez por cobrar');
+    update mkt_ventas set comision_cobrada = false, comision_cobrada_en = null, comision_mov_id = null where id = p_id;
+  end if;
+  perform eldo_auditar(case when p_cobrada then 'comision_cobrada' else 'comision_pendiente' end, 'mkt_ventas', p_id,
+    jsonb_build_object('comision', r.comision, 'movimiento_caja', v_mov, 'holder', v_holder));
+  return jsonb_build_object('ok', true, 'movimientoCaja', v_mov, 'monto', case when p_cobrada then r.comision else 0 end);
 end $$;
 
 -- -----------------------------------------------------------------------------
@@ -418,7 +495,8 @@ begin
   for f in select p.oid::regprocedure as sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname in ('mkt_requiere_admin', 'mkt_slug', 'mkt_guardar_vendedor',
              'mkt_activar_vendedor', 'mkt_guardar_producto', 'mkt_estado_producto', 'mkt_eliminar_producto',
-             'mkt_registrar_venta', 'mkt_anular_venta', 'mkt_comision_cobrada', 'tiendas_asociadas', 'mkt_panel') loop
+             'mkt_registrar_venta', 'mkt_anular_venta', 'mkt_comision_cobrada', 'tiendas_asociadas', 'mkt_panel',
+             'mkt_mov_comision_vigente', 'mkt_revertir_comision') loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
   end loop;
 end
@@ -433,8 +511,8 @@ grant execute on function
   public.mkt_estado_producto(uuid, text),
   public.mkt_eliminar_producto(uuid),
   public.mkt_registrar_venta(jsonb),
-  public.mkt_anular_venta(uuid, text),
-  public.mkt_comision_cobrada(uuid, boolean)
+  public.mkt_anular_venta(uuid, text, uuid),
+  public.mkt_comision_cobrada(uuid, boolean, uuid)
 to authenticated;
 
 commit;

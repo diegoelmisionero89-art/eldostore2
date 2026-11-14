@@ -9,8 +9,9 @@
    - Ventas asociadas: cada venta guarda total, % y comisión de ELDOSTORE y lo
      que corresponde al vendedor. Se anulan con motivo; nunca se borran.
 
-   Está separado de la tienda propia: no lee ni escribe products, ventas, caja
-   ni promociones. Si la migración 006 no está instalada, MKT.disponible queda
+   Está separado de la tienda propia: no lee ni escribe products, ventas
+   ni promociones. De la caja solo AGREGA (lo hace la base) el ingreso de cada
+   comisión cobrada, y su contramovimiento si se deshace. Si la migración 006 no está instalada, MKT.disponible queda
    en false y el panel funciona exactamente como antes (no se ve el menú).
    ========================================================================== */
 
@@ -365,12 +366,14 @@ function htmlVentasMkt() {
         <td>${fmtDate(s.fecha)}</td><td>${esc(s.vendedor_nombre)}</td>
         <td>${esc(s.producto_nombre)}<br><small style="color:var(--muted)">${esc(s.producto_codigo)} · ${fmt(s.precio_unitario)} c/u${s.cliente ? ' · ' + esc(s.cliente) : ''}</small></td>
         <td>${s.cantidad}</td><td>${fmt(s.total)}</td><td>${fmt(s.comision)}<br><small style="color:var(--muted)">${fmtPct(s.comision_pct)}</small></td><td>${fmt(s.monto_vendedor)}</td>
-        <td>${s.anulada ? `<span class="badge badge-anulada" title="${esc(s.motivo_anulacion)}">Anulada</span>` : s.comision_cobrada ? '<span class="badge badge-ok">Cobrada</span>' : '<span class="badge badge-pend">Por cobrar</span>'}</td>
+        <td>${s.anulada ? `<span class="badge badge-anulada" title="${esc(s.motivo_anulacion)}">Anulada</span>` : s.comision_cobrada
+          ? `<span class="badge badge-ok">Cobrada</span><br><small style="color:var(--muted)">${s.comision_cobrada_en ? fmtDate(s.comision_cobrada_en) : ''}${s.comision_mov_id ? ' · en caja' : ''}</small>`
+          : '<span class="badge badge-pend">Por cobrar</span>'}</td>
         <td style="white-space:nowrap">${s.anulada ? '' : `<button class="btn btn-sm" ${mktAdmin()} onclick="comisionCobradaMkt('${s.id}', ${!s.comision_cobrada})">${s.comision_cobrada ? 'Marcar por cobrar' : 'Marcar cobrada'}</button>
           <button class="btn btn-sm btn-danger" ${mktAdmin()} onclick="anularVentaMkt('${s.id}')">Anular</button>`}</td></tr>`).join('')
         : '<tr><td colspan="9" class="empty-state">No hay ventas asociadas con este filtro.</td></tr>'}</tbody>
     </table></div>
-    <p class="muted-sm" style="margin-top:10px">El cliente le paga al vendedor; la comisión la cobra ELDOSTORE al vendedor. Estas ventas no se suman a las ventas, la caja ni las cuentas de ELDOSTORE.</p>`;
+    <p class="muted-sm" style="margin-top:10px">El cliente le paga al vendedor; ELDOSTORE le cobra la comisión al vendedor. Al marcarla <b>cobrada</b>, solo la comisión entra como ingreso en la caja de ELDOSTORE (origen «comision_asociado»). El total de la venta no entra a la caja ni a las ventas propias.</p>`;
 }
 
 function abrirVentaMkt() {
@@ -427,15 +430,55 @@ async function guardarVentaMkt() {
     showToast(`Venta registrada: ${fmt(r.total)} · comisión ${fmt(r.comision)}.`);
   } catch (e) { showError(e); btn.disabled = false; btn.textContent = 'Registrar'; }
 }
-async function anularVentaMkt(id) {
-  const s = MKT.ventas.find(x => x.id === id); if (!s) return;
-  const motivo = prompt(`Anular la venta de ${s.cantidad} × ${s.producto_nombre} (${fmt(s.total)}).\nEl stock vuelve al producto. Motivo:`);
-  if (motivo === null) return;
-  if (motivo.trim().length < 3) { showToast('Indicá el motivo de la anulación.'); return; }
-  try { await rpcMkt('mkt_anular_venta', { p_id: id, p_motivo: motivo.trim() }); renderAsociados(); showToast('Venta anulada.'); }
-  catch (e) { showError(e); }
+/* Caja: la comisión cobrada entra como ingreso en la caja de ELDOSTORE (cash_movements, origen
+   «comision_asociado», con la referencia de la venta). Lo registra la base; acá se elige quién
+   recibió el dinero. Volver a «por cobrar» o anular agrega el contramovimiento (no borra nada). */
+function quienSelectMkt(id, etiqueta) {
+  return `<div class="field"><label>${etiqueta}</label><select id="${id}">${holderOptions(CUENTAS.miHolderId)}</select></div>`;
 }
-async function comisionCobradaMkt(id, cobrada) {
-  try { await rpcMkt('mkt_comision_cobrada', { p_id: id, p_cobrada: cobrada }); renderAsociados(); showToast(cobrada ? 'Comisión marcada como cobrada.' : 'Comisión marcada como por cobrar.'); }
-  catch (e) { showError(e); }
+function anularVentaMkt(id) {
+  const s = MKT.ventas.find(x => x.id === id); if (!s) return;
+  openModal(`<h3>Anular venta asociada</h3>
+    <p class="muted-sm">${s.cantidad} × ${esc(s.producto_nombre)} · ${esc(s.vendedor_nombre)} · ${fmt(s.total)}. La venta queda en el historial como anulada y el stock vuelve al producto.</p>
+    ${s.comision_cobrada && s.comision > 0 ? `<div class="notice">La comisión de ${fmt(s.comision)} ya estaba cobrada: se registra un <b>egreso</b> en la caja de ELDOSTORE que la compensa (el ingreso original no se borra).</div>
+      ${quienSelectMkt('ma_quien', '¿Quién devuelve el dinero?')}` : ''}
+    <div class="field"><label>Motivo</label><input id="ma_motivo" maxlength="200"></div>
+    <div class="modal-actions"><button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-danger btn-sm" id="maBtn" onclick="confirmarAnularMkt('${id}')">Anular venta</button></div>`);
+}
+async function confirmarAnularMkt(id) {
+  const motivo = document.getElementById('ma_motivo').value.trim();
+  if (motivo.length < 3) { showToast('Indicá el motivo de la anulación.'); return; }
+  const q = document.getElementById('ma_quien');
+  const btn = document.getElementById('maBtn'); btn.disabled = true;
+  try {
+    const r = await rpcMkt('mkt_anular_venta', { p_id: id, p_motivo: motivo, p_holder_id: q ? q.value : null });
+    await refreshCash();
+    closeModal(); renderAsociados(); showToast(r && r.comisionDevuelta ? 'Venta anulada. La comisión salió de la caja.' : 'Venta anulada.');
+  } catch (e) { showError(e); btn.disabled = false; }
+}
+function comisionCobradaMkt(id, cobrada) {
+  const s = MKT.ventas.find(x => x.id === id); if (!s) return;
+  openModal(cobrada ? `<h3>Comisión cobrada</h3>
+      <p class="muted-sm">${esc(s.vendedor_nombre)} · ${s.cantidad} × ${esc(s.producto_nombre)} (${esc(s.producto_codigo)}) · venta de ${fmt(s.total)}.</p>
+      <div class="notice">${s.comision > 0 ? `Entra a la <b>caja de ELDOSTORE</b> un ingreso de <b>${fmt(s.comision)}</b> (solo la comisión del ${fmtPct(s.comision_pct)}; el resto es del vendedor).`
+        : 'La comisión de esta venta es $0: se marca como cobrada sin movimiento de caja.'}</div>
+      ${s.comision > 0 ? quienSelectMkt('mc_quien', '¿Quién recibió el dinero?') : ''}
+      <div class="modal-actions"><button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary btn-sm" id="mcBtn" onclick="confirmarComisionMkt('${id}', true)">Registrar cobro</button></div>`
+    : `<h3>Volver a «por cobrar»</h3>
+      <div class="notice">Se registra un <b>egreso de ${fmt(s.comision)}</b> en la caja de ELDOSTORE que compensa el cobro anterior (el ingreso no se borra).</div>
+      ${s.comision > 0 ? quienSelectMkt('mc_quien', '¿Quién devuelve o corrige el dinero?') : ''}
+      <div class="modal-actions"><button class="btn btn-sm" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-danger btn-sm" id="mcBtn" onclick="confirmarComisionMkt('${id}', false)">Volver a por cobrar</button></div>`);
+}
+async function confirmarComisionMkt(id, cobrada) {
+  const q = document.getElementById('mc_quien');
+  const btn = document.getElementById('mcBtn'); btn.disabled = true;   // evita el doble clic
+  try {
+    const r = await rpcMkt('mkt_comision_cobrada', { p_id: id, p_cobrada: cobrada, p_holder_id: q ? q.value : null });
+    await refreshCash();
+    closeModal(); renderAsociados();
+    showToast(cobrada ? (r && r.monto ? `Comisión cobrada: ingresaron ${fmt(r.monto)} a la caja de ELDOSTORE.` : 'Comisión marcada como cobrada.') : 'Comisión otra vez por cobrar (contramovimiento en caja).');
+  } catch (e) { showError(e); btn.disabled = false; }
 }

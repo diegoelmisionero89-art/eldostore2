@@ -2,7 +2,8 @@
 -- ELDOSTORE — Reversión de la migración 006 (Vendedores asociados V1)
 --
 -- Quita SOLO lo que agregó la 006: sus 4 tablas, su secuencia y sus funciones.
--- No toca products, ventas, caja, cuentas, usuarios ni promociones.
+-- No toca products, ventas, cuentas, usuarios ni promociones. Los movimientos de caja de comisiones
+-- cobradas (origen 'comision_asociado') QUEDAN en la caja: son dinero real que entró.
 --
 -- ATENCIÓN: borra los vendedores, productos asociados y ventas asociadas cargados.
 -- Por eso se NIEGA si hay datos, salvo que primero se descargue un respaldo y se
@@ -25,8 +26,10 @@ $revertir$;
 
 drop function if exists public.tiendas_asociadas();
 drop function if exists public.mkt_panel();
-drop function if exists public.mkt_comision_cobrada(uuid, boolean);
-drop function if exists public.mkt_anular_venta(uuid, text);
+drop function if exists public.mkt_comision_cobrada(uuid, boolean, uuid);
+drop function if exists public.mkt_anular_venta(uuid, text, uuid);
+drop function if exists public.mkt_revertir_comision(uuid, uuid, text);
+drop function if exists public.mkt_mov_comision_vigente(uuid);
 drop function if exists public.mkt_registrar_venta(jsonb);
 drop function if exists public.mkt_eliminar_producto(uuid);
 drop function if exists public.mkt_estado_producto(uuid, text);

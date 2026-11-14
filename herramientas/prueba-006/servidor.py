@@ -96,8 +96,6 @@ class H(http.server.SimpleHTTPRequestHandler):
             return self.responder(200, {"data": d, "error": e})
         if ruta == "/__tabla":
             t = q["tabla"]
-            if t == "accounts":   # modo cuentas habilitado (como producción)
-                return self.responder(200, {"data": [{"id": "a0000000-0000-0000-0000-000000000001", "codigo": "eldostore", "nombre": "ELDOSTORE", "tipo": "negocio", "activo": True, "creado": "2026-10-01T00:00:00Z"}], "error": None})
             if t == "app_config":
                 return self.responder(200, {"data": [{"id": 1, "nombre_negocio": "ELDOSTORE", "next_code": 200}], "error": None})
             if not re.fullmatch(r"[a-z_0-9]+", t):

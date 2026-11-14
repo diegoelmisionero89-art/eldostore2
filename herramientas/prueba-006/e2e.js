@@ -174,13 +174,37 @@ const r = (n, cond, det) => { if (cond) { ok++; console.log("[OK]   ", n, det ? 
   const venta = await page.evaluate(() => MKT.ventas[0]);
   r("Venta guardada con la comisión calculada por la base", venta.total === 90000 && venta.comision === 9000 && venta.monto_vendedor === 81000 && venta.comision_pct === 10);
   r("La venta descontó el stock asociado (4 → 2)", await page.evaluate(() => MKT.productos.find(p => p.codigo === "TA0001").stock === 2));
+  const cajaAntes = await page.evaluate(() => DB.cashMovements.length);
+  r("Comisión pendiente: la caja no cambia", await page.evaluate(() => !DB.cashMovements.some(m => m.origen === "comision_asociado")));
   await page.click("text=Marcar cobrada");
-  await page.waitForFunction(() => MKT.ventas[0].comision_cobrada === true);
+  await page.waitForSelector("#mcBtn");
+  const aviso = await page.$eval("#modalBody", e => e.textContent);
+  r("El panel avisa que entra SOLO la comisión a la caja y pide quién recibió el dinero",
+    /ingreso de \$9\.000/.test(aviso) && (await page.$("#mc_quien")) !== null, aviso.replace(/\s+/g, " ").slice(0, 160));
+  await page.screenshot({ path: path.join(OUT, "10a-panel-comision-cobrada.png") });
+  await page.click("#mcBtn");
+  await page.waitForFunction(() => MKT.ventas[0].comision_cobrada === true && !document.getElementById("modalBg").classList.contains("open"));
+  const mov = await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado"));
+  r("Caja: un ingreso de $9.000 (la comisión, no los $90.000), cuenta ELDOSTORE, con la referencia de la venta",
+    mov.length === 1 && mov[0].tipo === "ingreso" && mov[0].monto === 9000 && mov[0].refId === (await page.evaluate(() => MKT.ventas[0].id))
+      && (await page.evaluate(id => accountName(id), mov[0].accountId)) === "ELDOSTORE",
+    mov[0] && `${mov[0].tipo} ${mov[0].monto} · ${mov[0].descripcion}`);
+  r("Los movimientos anteriores de la caja siguen iguales", await page.evaluate(n => DB.cashMovements.length === n + 1, cajaAntes));
   await page.screenshot({ path: path.join(OUT, "10-panel-ventas.png"), fullPage: true });
-  r("Comisión marcada como cobrada", true);
+  await page.evaluate(() => switchView("caja"));
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(OUT, "10b-panel-caja.png"), fullPage: true });
+  r("La caja del panel muestra el ingreso de la comisión", await page.$eval("#cajaTableBody", t => t.textContent.includes("comision_asociado") && t.textContent.includes("Comisión 10 % de Perfumes del Sol")));
+  await page.evaluate(() => switchView("asociados"));
   await page.click("text=Anular");
-  await page.waitForFunction(() => MKT.ventas[0].anulada === true);
+  await page.waitForSelector("#maBtn");
+  await page.fill("#ma_motivo", "El cliente devolvió el perfume");
+  await page.click("#maBtn");
+  await page.waitForFunction(() => MKT.ventas[0].anulada === true && !document.getElementById("modalBg").classList.contains("open"));
   r("Anular: conserva la venta y devuelve el stock (2 → 4)", await page.evaluate(() => MKT.ventas[0].anulada && MKT.productos.find(p => p.codigo === "TA0001").stock === 4));
+  const saldoCom = await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado").reduce((a, m) => a + (m.tipo === "ingreso" ? m.monto : -m.monto), 0));
+  r("Anular una venta con comisión cobrada: contramovimiento en caja (saldo de comisiones 0, nada borrado)",
+    saldoCom === 0 && (await page.evaluate(() => DB.cashMovements.filter(m => m.origen === "comision_asociado").length)) === 2);
 
   // Desactivar vendedor → desaparece de la tienda
   await page.click(".tab >> text=Vendedores");

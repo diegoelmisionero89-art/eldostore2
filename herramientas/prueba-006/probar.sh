@@ -70,8 +70,33 @@ q authenticated $ADM "select mkt_anular_venta('$s2id','Cliente desistió')" >/de
 r "Anular devuelve el stock y conserva la venta" "^2\|2\|1$" "$(q postgres "" "select (select stock from mkt_productos where id='$p1id')||'|'||count(*)||'|'||count(*) filter (where anulada) from mkt_ventas")"
 r "Anular dos veces se rechaza" "ERROR:.*ya estaba anulada" "$(q authenticated $ADM "select mkt_anular_venta('$s2id','otra vez')")"
 s1id=$(echo "$s1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+# --- Caja: la comisión cobrada entra como ingreso de ELDOSTORE (estructura real de cash_movements) ---
+CAJA0=$(q postgres "" "select count(*)||'|'||md5(string_agg(id::text||tipo||origen||monto||coalesce(ref_id::text,''), ',' order by id)) from cash_movements")
+r "Comisión pendiente: no entra nada a la caja" "^0$" "$(q postgres "" "select count(*) from cash_movements where origen = 'comision_asociado'")"
 q authenticated $ADM "select mkt_comision_cobrada('$s1id', true)" >/dev/null
-r "Marcar comisión cobrada" "^t$" "$(q postgres "" "select comision_cobrada from mkt_ventas where id='$s1id'")"
+r "Cobrada: un ingreso por la COMISIÓN (no el total), cuenta ELDOSTORE, custodio Diego, con la referencia de la venta" \
+  "^ingreso\|9000\|eldostore\|diego\|true\|true$" \
+  "$(q postgres "" "select c.tipo||'|'||c.monto::int||'|'||a.codigo||'|'||h.codigo||'|'||(c.ref_id = '$s1id')||'|'||(v.comision_mov_id = c.id) from cash_movements c join accounts a on a.id=c.account_id join cash_holders h on h.id=c.holder_id join mkt_ventas v on v.id=c.ref_id where c.origen='comision_asociado'")"
+r "La descripción indica vendedor, producto, código y fecha de la venta" "Comisión 10 % de Perfumes Ñandú Árabe · 2 × Perfume Lattafa 100 ml \(TA0001\) · venta asociada de [0-9]{2}/[0-9]{2}/[0-9]{4}" \
+  "$(q postgres "" "select descripcion from cash_movements where origen='comision_asociado'")"
+r "Marcarla cobrada otra vez se rechaza (sin duplicar)" "ERROR:.*ya está registrada" "$(q authenticated $ADM "select mkt_comision_cobrada('$s1id', true)")"
+r "Sigue habiendo un solo ingreso de esa comisión" "^1$" "$(q postgres "" "select count(*) from cash_movements where origen='comision_asociado' and ref_id='$s1id'")"
+r "Usuario no administrador no puede marcar comisiones" "ERROR:.*Solo el administrador" "$(q authenticated $NIKO "select mkt_comision_cobrada('$s1id', false)")"
+r "Custodio inválido se rechaza" "ERROR:.*custodio" "$(q authenticated $ADM "select mkt_comision_cobrada('$s1id', false, gen_random_uuid())")"
+q authenticated $ADM "select mkt_comision_cobrada('$s1id', false)" >/dev/null
+r "Volver a «por cobrar»: contramovimiento (egreso con anula_a), el ingreso no se borra" "^2\|0\|false$" \
+  "$(q postgres "" "select count(*)||'|'||sum(case when tipo='ingreso' then monto else -monto end)::int||'|'||(select comision_cobrada from mkt_ventas where id='$s1id') from cash_movements where origen='comision_asociado' and (anula_a is null or anula_a in (select id from cash_movements where ref_id='$s1id'))")"
+NIKOH=$(q postgres "" "select id from cash_holders where codigo='niko'")
+q authenticated $ADM "select mkt_comision_cobrada('$s1id', true, '$NIKOH')" >/dev/null
+r "Cobrarla de nuevo: un ingreso nuevo, con quien recibió el dinero (Niko)" "^niko\|9000$" \
+  "$(q postgres "" "select h.codigo||'|'||c.monto::int from mkt_ventas v join cash_movements c on c.id=v.comision_mov_id join cash_holders h on h.id=c.holder_id where v.id='$s1id'")"
+r "Saldo de comisiones en caja = una sola comisión vigente" "^9000$" "$(q postgres "" "select sum(case when tipo='ingreso' then monto else -monto end)::int from cash_movements where origen='comision_asociado'")"
+q authenticated $ADM "select mkt_anular_venta('$s1id','Devolución del cliente')" >/dev/null
+r "Anular una venta con comisión cobrada la saca de la caja (contramovimiento) y la deja anulada" "^0\|true\|false$" \
+  "$(q postgres "" "select (select sum(case when tipo='ingreso' then monto else -monto end)::int from cash_movements where origen='comision_asociado')||'|'||anulada||'|'||comision_cobrada from mkt_ventas where id='$s1id'")"
+r "Comisión de venta anulada no se puede cobrar" "ERROR:.*anulada" "$(q authenticated $ADM "select mkt_comision_cobrada('$s1id', true)")"
+r "Los movimientos de caja ANTERIORES no cambiaron" "^$CAJA0$" "$(q postgres "" "select count(*)||'|'||md5(string_agg(id::text||tipo||origen||monto||coalesce(ref_id::text,''), ',' order by id)) from cash_movements where origen <> 'comision_asociado'")"
+r "En la caja nunca entra el total de una venta asociada" "^0$" "$(q postgres "" "select count(*) from cash_movements c join mkt_ventas v on v.id=c.ref_id where c.monto = v.total and v.total <> v.comision")"
 r "Borrar un producto con ventas se rechaza" "ERROR:.*pausalo" "$(q authenticated $ADM "select mkt_eliminar_producto('$p1id')")"
 r "Borrar un producto sin ventas" '"ok": true' "$(q authenticated $ADM "select mkt_eliminar_producto('$p2')")"
 r "Todo queda registrado en audit_log" "^[1-9][0-9]*$" "$(q postgres "" "select count(*) from audit_log where tabla like 'mkt_%'")"
