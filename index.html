@@ -96,6 +96,18 @@
     </div>
   </div>
 
+  <!-- Tiendas asociadas (migración 006): se muestra solo si hay tiendas publicadas -->
+  <section class="asociadas" id="asociadas" aria-labelledby="asTit" hidden>
+    <div class="wrap">
+      <div class="as-hd">
+        <div><h2 id="asTit">Tiendas asociadas</h2>
+          <p>Comercios de la zona que venden a través de ELDOSTORE. Cada tienda recibe su pedido por WhatsApp y coordina el pago y la entrega.</p></div>
+        <a class="as-ver" href="#tiendas">Ver todas <span aria-hidden="true">›</span></a>
+      </div>
+      <div class="as-lista" id="asLista"></div>
+    </div>
+  </section>
+
   <section class="info" id="envios" aria-labelledby="envTitle">
     <div class="wrap">
       <h2 id="envTitle">Envíos y cómo comprar</h2>
@@ -150,6 +162,7 @@
   </div>
   <ul class="cat-list" id="catList"></ul>
   <div class="drawer-ft">
+    <a href="#tiendas" data-close id="asLinkMenu" hidden>Tiendas asociadas</a>
     <a href="#envios" data-close>Envíos y cómo comprar</a>
     <a href="#contacto" data-close>Contacto</a>
   </div>
@@ -227,5 +240,6 @@ window.ELDOSTORE_CONFIG = {
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="js/tienda.js"></script>
+<script src="js/asociadas.js"></script>
 </body>
 </html>

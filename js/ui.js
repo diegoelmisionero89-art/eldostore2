@@ -94,6 +94,7 @@ async function boot() {
   }
   document.body.classList.toggle('modo-cuentas', modoCuentas());
   document.body.classList.toggle('modo-promos', PROMOS.disponible);
+  document.body.classList.toggle('modo-asociados', typeof MKT !== 'undefined' && MKT.disponible);   // migración 006
   mostrarAvisosDeLectura();
 
   document.querySelectorAll('.nav-item').forEach(item => {
@@ -119,13 +120,14 @@ function switchView(view) {
   const titles = {
     dashboard: 'Dashboard', productos: 'Productos / Inventario', clientes: 'Clientes', pedidos: 'Pedidos',
     ventas: 'Ventas', compras: 'Compras', gastos: 'Gastos', caja: 'Caja', envios: 'Envíos',
-    reportes: 'Reportes', config: 'Configuración', cuentas: 'Cuentas', tienda: 'Tienda online'
+    reportes: 'Reportes', config: 'Configuración', cuentas: 'Cuentas', tienda: 'Tienda online', asociados: 'Tiendas asociadas'
   };
   document.getElementById('viewTitle').textContent = titles[view] || '';
   const renderers = {
     dashboard: renderDashboard, productos: renderProducts, clientes: renderClients, pedidos: renderOrders,
     ventas: renderSales, compras: renderPurchases, gastos: renderExpenses, caja: renderCash, envios: renderShipments,
-    reportes: renderReportes, cuentas: renderCuentas, config: renderConfig, tienda: renderTienda
+    reportes: renderReportes, cuentas: renderCuentas, config: renderConfig, tienda: renderTienda,
+    asociados: typeof renderAsociados === 'function' ? renderAsociados : null
   };
   if (renderers[view]) renderers[view]();
 }

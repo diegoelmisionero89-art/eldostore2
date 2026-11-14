@@ -238,3 +238,13 @@ body:not(.modo-promos) .solo-promos{display:none !important}
 .img-prev-info.ok{color:var(--green)}
 .img-prev-info.aviso{color:var(--gold2)}
 .img-prev-info.error{color:var(--red)}
+
+/* ---------- Tiendas asociadas (migración 006) ---------- */
+body:not(.modo-asociados) .solo-asociados{display:none !important}
+.mkt-fotos{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px;margin-bottom:8px}
+.mkt-foto{display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid var(--line);border-radius:10px;background:var(--dark)}
+.mkt-foto img,.mkt-foto .promo-thumb{width:100%;height:auto;aspect-ratio:1;object-fit:contain;background:#fff;border-radius:8px}
+.mkt-foto:first-child{border-color:var(--gold)}
+.mkt-foto-acc{display:flex;gap:4px;justify-content:space-between}
+.mkt-foto-acc .btn{min-height:34px;padding:0 10px}
+.mkt-foto-err{color:var(--red);font-size:.72rem}

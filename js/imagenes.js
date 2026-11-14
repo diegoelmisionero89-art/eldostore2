@@ -20,7 +20,10 @@
 const IMG_TIPOS = {
   producto:  { max: 1200, carpeta: '',           transparencia: false },
   banner:    { max: 1600, carpeta: 'banners',    transparencia: false },
-  categoria: { max: 400,  carpeta: 'categorias', transparencia: true }
+  categoria: { max: 400,  carpeta: 'categorias', transparencia: true },
+  // Vendedores asociados (migración 006)
+  logo:      { max: 400,  carpeta: 'vendedores', transparencia: true },
+  asociado:  { max: 1200, carpeta: 'asociados',  transparencia: false }
 };
 const IMG_CALIDAD = 0.82;
 const IMG_MAX_ENTRADA = 15 * 1024 * 1024;   // lo que se puede elegir

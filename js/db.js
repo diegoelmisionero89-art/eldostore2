@@ -217,6 +217,7 @@ async function refreshAll() {
   if (cfg.data) DB.config = rowToConfig(cfg.data);
   await loadCuentas();
   if (modoCuentas()) await cargarPromociones();
+  if (modoCuentas() && typeof cargarAsociados === 'function') await cargarAsociados();   // migración 006 (asociados.js)
 }
 
 /* Carga cuentas, custodios, usuarios y repartos si la migración 003 está aplicada. */
