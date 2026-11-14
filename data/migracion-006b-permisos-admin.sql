@@ -73,5 +73,11 @@ $controles$;
 
 commit;
 
-select 'Migración 006b aplicada: el administrador puede leer mkt_ventas; los demás no' as resultado;
+-- El mensaje final se calcula con lo que REALMENTE quedó en la base (si algo falló y la transacción
+-- se deshizo, dice «NO se aplicó» aunque el editor siga ejecutando las líneas siguientes).
+select case when to_regprocedure('public.mkt_es_admin()') is not null
+             and (select qual from pg_policies where schemaname = 'public' and tablename = 'mkt_ventas'
+                  and policyname = 'lectura_administrador') = 'mkt_es_admin()'
+            then 'Migración 006b aplicada: el administrador puede leer mkt_ventas; los demás no'
+            else 'ATENCIÓN: la 006b NO se aplicó (no quedó ningún cambio). Revisá el error de arriba.' end as resultado;
 -- FIN DEL ARCHIVO 006b
