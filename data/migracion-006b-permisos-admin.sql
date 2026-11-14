@@ -1,7 +1,7 @@
 -- =============================================================================
 -- ELDOSTORE — Migración 006b: corrección del permiso de lectura de mkt_ventas
 --
--- Versión para REVISIÓN · 13/11/2026 · NO se ejecutó en la base real.
+-- Versión DEFINITIVA para aplicar · 14/11/2026 · NO se ejecutó en la base real.
 -- Requiere la 006 instalada. Se instala SOLO con autorización de Diego.
 --
 -- Problema (detectado en producción después de instalar la 006):
@@ -25,6 +25,12 @@
 --
 -- No toca datos, products, ventas, caja, cuentas, usuarios, promociones ni las demás
 -- políticas. Una sola transacción con controles: si algo falla, no queda nada aplicado.
+--
+-- Si hay un error: PostgreSQL aborta la transacción y TODO se deshace (ROLLBACK). No queda
+-- ningún cambio parcial. El resultado lo indica el propio editor:
+--   * SQL Editor de Supabase: muestra el ERROR y no ejecuta nada más (no aparece mensaje final).
+--   * psql: muestra el ERROR y, al llegar a COMMIT, responde ROLLBACK.
+-- La consulta final solo informa el estado real de la base; si no aparece, guiarse por el ERROR.
 -- La última línea tiene que ser:  -- FIN DEL ARCHIVO 006b
 -- =============================================================================
 begin;
@@ -73,8 +79,8 @@ $controles$;
 
 commit;
 
--- El mensaje final se calcula con lo que REALMENTE quedó en la base (si algo falló y la transacción
--- se deshizo, dice «NO se aplicó» aunque el editor siga ejecutando las líneas siguientes).
+-- Comprobación final (fuera de la transacción): lee el estado REAL de la base. Puede no mostrarse si
+-- el editor se detuvo en un error; en ese caso no quedó ningún cambio (ver arriba).
 select case when to_regprocedure('public.mkt_es_admin()') is not null
              and (select qual from pg_policies where schemaname = 'public' and tablename = 'mkt_ventas'
                   and policyname = 'lectura_administrador') = 'mkt_es_admin()'
