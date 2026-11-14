@@ -92,6 +92,18 @@ ingresos efectivos salen de la caja, donde cada cobro tiene un solo ingreso vige
 con el otro. Los usuarios que no son administradores no ven ventas
 asociadas, comisiones ni indicadores (ni por el panel ni leyendo la tabla).
 
+## Corrección 006b (permiso de lectura de ventas asociadas)
+
+La 006 quedó instalada en producción el 13/11/2026. Al verificarla apareció que la política de
+`mkt_ventas` llama a `eldo_es_admin()`, y en producción la migración 003 les quitó a los usuarios
+autenticados el permiso de ejecutar esa función: cualquier lectura directa de `mkt_ventas` daba
+«permission denied for function eldo_es_admin» (no se filtraba nada; fallaba). El panel no se veía
+afectado porque usa `mkt_panel()` y `mkt_indicadores()`.
+
+`data/migracion-006b-permisos-admin.sql` lo corrige sin tocar nada existente: crea `mkt_es_admin()`
+(SECURITY DEFINER, solo para usuarios autenticados) y la política de `mkt_ventas` pasa a usarla. Las
+pruebas ahora usan los mismos permisos de funciones que producción.
+
 ## Poner en producción (cada paso con autorización de Diego)
 
 1. **Respaldo:** descargar el respaldo JSON del panel (Configuración → Descargar respaldo).

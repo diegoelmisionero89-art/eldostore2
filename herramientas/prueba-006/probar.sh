@@ -22,6 +22,14 @@ inst=$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$R/data/migracion-006-vend
 r "Instalación" "instalada correctamente\|1\|0" "$inst"
 r "Volver a instalar se niega sin cambiar nada" "ya existe|parece aplicada" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$R/data/migracion-006-vendedores-asociados.sql" 2>&1 | grep -o 'parece aplicada' | head -1)"
 
+# --- 006b: con los permisos reales de producción, la política de mkt_ventas fallaba ---
+r "SIN la 006b (como producción hoy): el administrador no puede leer mkt_ventas directo" "ERROR:.*permission denied for function eldo_es_admin" "$(q authenticated $ADM "select count(*) from mkt_ventas")"
+r "006b: aplicación" "006b aplicada" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$R/data/migracion-006b-permisos-admin.sql" 2>&1 | tail -1)"
+r "006b: volver a aplicarla se niega" "parece aplicada" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$R/data/migracion-006b-permisos-admin.sql" 2>&1 | grep -o 'parece aplicada' | head -1)"
+r "006b: eldo_es_admin sigue SIN permiso para authenticated (no se tocó la 003)" "^f$" "$(q postgres "" "select has_function_privilege('authenticated','public.eldo_es_admin()','execute')")"
+r "006b: mkt_es_admin solo para authenticated (no anon)" "^true\|false$" "$(q postgres "" "select has_function_privilege('authenticated','public.mkt_es_admin()','execute')||'|'||has_function_privilege('anon','public.mkt_es_admin()','execute')")"
+r "006b: visitante no puede ejecutar mkt_es_admin" "ERROR:.*permission denied" "$(q anon "" "select mkt_es_admin()")"
+
 # Permisos
 r "Visitante no lee las tablas directo" "ERROR:.*permission denied" "$(q anon "" "select count(*) from mkt_vendedores")"
 r "Visitante no puede crear vendedores" "ERROR:.*permission denied" "$(q anon "" "select mkt_guardar_vendedor(null, '{\"nombre\":\"X\",\"whatsapp\":\"5493751000000\"}')")"
@@ -119,6 +127,9 @@ r "Por vendedor (ya cobrado todo): generadas, cobradas y pendientes" '"cobradas"
 r "Usuario no administrador NO ve los indicadores" "ERROR:.*Solo el administrador" "$(q authenticated $NIKO "select mkt_indicadores()")"
 r "Usuario no administrador NO ve ventas ni comisiones en el panel" '"ventas": \[\]' "$(q authenticated $NIKO "select mkt_panel()")"
 r "Usuario no administrador NO lee la tabla de ventas asociadas" "^0$" "$(q authenticated $NIKO "select count(*) from mkt_ventas")"
+r "Usuario no administrador NO lee montos ni comisiones (consulta directa: 0 filas)" "^0\|$" "$(q authenticated $NIKO "select count(*)||'|'||coalesce(sum(comision)::text,'') from mkt_ventas")"
+r "Usuario no administrador SÍ ve vendedores y productos (no financieros), como el resto del panel" "^2\|2$" "$(q authenticated $NIKO "select (select count(*) from mkt_vendedores)||'|'||(select count(*) from mkt_productos)")"
+r "Visitante no lee mkt_ventas" "ERROR:.*permission denied" "$(q anon "" "select count(*) from mkt_ventas")"
 r "El administrador sí la lee" "^3$" "$(q authenticated $ADM "select count(*) from mkt_ventas")"
 r "Visitante no puede pedir indicadores" "ERROR:.*permission denied" "$(q anon "" "select mkt_indicadores()")"
 q authenticated $ADM "select mkt_anular_venta('$s1id','Devolución del cliente')" >/dev/null
@@ -141,6 +152,7 @@ sed 's/v_confirmar boolean := false/v_confirmar boolean := true/' "$R/data/migra
 r "Revertir confirmado deja todo como antes" "revertida" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$CONF" 2>&1 | tail -1)"
 r "Después de revertir no queda nada de la 006" "^0$" "$(q postgres "" "select count(*) from pg_class where relname like 'mkt\_%' and relnamespace='public'::regnamespace")"
 r "Se puede volver a instalar después de revertir" "instalada correctamente" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$R/data/migracion-006-vendedores-asociados.sql" 2>&1 | tail -1)"
+r "Y la 006b otra vez sobre la reinstalación" "006b aplicada" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$R/data/migracion-006b-permisos-admin.sql" 2>&1 | tail -1)"
 
 echo; echo "Resultado: $ok correctas, $mal con falla."
 [ $mal -eq 0 ]

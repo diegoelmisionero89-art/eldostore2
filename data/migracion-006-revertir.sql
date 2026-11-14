@@ -44,6 +44,7 @@ drop table if exists public.mkt_producto_fotos;
 drop table if exists public.mkt_productos;
 drop table if exists public.mkt_vendedores;
 drop sequence if exists public.mkt_productos_codigo_seq;
+drop function if exists public.mkt_es_admin();   -- de la 006b (después de las tablas: la usa la política de mkt_ventas)
 
 commit;
 select 'Migración 006 revertida: la tienda y el panel quedan como antes' as resultado;

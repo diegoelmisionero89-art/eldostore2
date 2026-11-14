@@ -68,3 +68,11 @@ select 'egreso', 'comision_revendedor', 3000, 'Comisión de revendedor', gen_ran
 insert into public.app_users values
   ('11111111-1111-1111-1111-111111111111', (select id from public.cash_holders where codigo = 'diego'), 'Diego', true, true),
   ('22222222-2222-2222-2222-222222222222', (select id from public.cash_holders where codigo = 'niko'), 'Niko', true, false);
+
+-- Permisos de funciones IGUALES a producción (migración 003): se revocó todo a public/anon/authenticated
+-- y solo se devolvió eldo_es_usuario_activo() a authenticated. (Sin esto, la prueba no detectaba
+-- que una política que llama a eldo_es_admin() falla para los usuarios autenticados.)
+revoke all on function public.eldo_es_admin(), public.eldo_es_usuario_activo(), public.eldo_requiere_usuario(),
+  public.eldo_auditar(text, text, uuid, jsonb), public.eldo_cuenta(text), public.eldo_valida_custodio(uuid)
+  from public, anon, authenticated;
+grant execute on function public.eldo_es_usuario_activo() to authenticated;
