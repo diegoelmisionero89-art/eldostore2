@@ -121,6 +121,15 @@ r "Reversión: deja todo exactamente como antes de la 007" "^iguales$" "$( [[ $(
 r "Reversión: el problema vuelve a estar (prueba de que la 007 era lo que lo cerraba)" "^4$" "$(q authenticated $EXT "select count(*) from products")"
 r "Después de revertir, la 007 se puede volver a aplicar" "007 aplicada" "$(psql "$PGURL" -X -q -tA -v ON_ERROR_STOP=1 -f "$M" 2>&1 | tail -1)"
 
+echo "== Convivencia con migraciones anteriores =="
+# La reversión de la 003 borra eldo_es_usuario_activo() (sin cascade, en una transacción). Con la 007 aplicada,
+# PostgreSQL se niega a borrarla porque las políticas dependen de ella: no queda nada a medias.
+r "Borrar eldo_es_usuario_activo() con la 007 aplicada se rechaza (dependencia)" "ERROR:.*depend" "$(sql "begin; drop function public.eldo_es_usuario_activo(); rollback;")"
+r "…y no cambió nada" "^4$" "$(sql "select count(*) from pg_policies where policyname like 'eldo007%'")"
+nueva_base
+r "Aplicación en un solo envío (como el SQL Editor de Supabase)" "007 aplicada" "$(psql "$PGURL" -X -q -tA -c "$(cat "$M")" 2>&1 | tail -1)"
+r "…con el mismo resultado: externo 0 productos, Diego y Niko 4, visitante 3" "^0 4 4 3$" "$(q authenticated $EXT "select count(*) from products"; echo -n ' '; q authenticated $DIEGO "select count(*) from products"; echo -n ' '; q authenticated $NIKO "select count(*) from products"; echo -n ' '; q anon - "select count(*) from catalogo_tienda()")"
+
 echo "== ROLLBACK ante errores: nunca queda una aplicación parcial =="
 # Se inyecta un error en 4 puntos y se ejecuta de 3 maneras. Después de cada intento la base tiene que
 # quedar EXACTAMENTE como antes (0 políticas eldo007 y la misma huella).

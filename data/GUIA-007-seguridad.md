@@ -47,6 +47,10 @@ algún día se agrega una, cualquier usuario con sesión podría borrarlas todas
 
 Volver atrás: `migracion-007-revertir.sql`.
 
+Orden de reversiones: las políticas de la 007 (igual que las de la 006 y la 003) usan `eldo_es_usuario_activo()`.
+Si alguna vez hiciera falta revertir la 003, primero hay que revertir la 007 y la 006. Si no se respeta el orden,
+PostgreSQL rechaza la reversión de la 003 completa (no queda nada a medias).
+
 ## Repetir las pruebas (base descartable, nunca producción)
 
 ```bash
